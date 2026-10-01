@@ -7,7 +7,8 @@ module Acp
     REQUIRED_SETTINGS = %i[interval fetch_concurrency ingest_concurrency pipeline_capacity].freeze
 
     attr_reader :name, :interval, :fetch_concurrency, :ingest_concurrency,
-                :pipeline_capacity, :callbacks, :fetch_retry, :ingest_retry
+                :pipeline_capacity, :callbacks, :fetch_retry, :ingest_retry,
+                :discovery_interval, :retry_cooldown
 
     def initialize(name:, settings:, callbacks:, fetch_retry:, ingest_retry:)
       @name = validate_name(name)
@@ -16,6 +17,8 @@ module Acp
       @callbacks = callbacks.dup.freeze
       @fetch_retry = fetch_retry
       @ingest_retry = ingest_retry
+      @discovery_interval = positive_number(settings.fetch(:discovery_interval, 60), "discovery_interval")
+      @retry_cooldown = positive_number(settings.fetch(:retry_cooldown, settings.fetch(:interval)), "retry_cooldown")
       freeze
     end
 

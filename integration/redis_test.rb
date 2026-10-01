@@ -61,6 +61,55 @@ class RedisCoordinationIntegrationTest < Minitest::Test
     @store.release("tenant", lease) if lease
   end
 
+  def test_discovery_only_disables_members_after_a_completed_generation
+    token = @store.acquire_discovery
+    generation = @store.begin_discovery(token)
+    @store.register_discovered_tenant("tenant", generation, token)
+    @store.register_discovered_tenant(12, generation, token)
+    @store.complete_discovery(generation, token)
+    @store.release_discovery(token)
+
+    state = @store.initialize_state("tenant", Time.utc(2025, 1, 1))
+    assert_equal [12, "tenant"], @store.enabled_tenants.sort_by(&:to_s)
+
+    next_token = @store.acquire_discovery
+    next_generation = @store.begin_discovery(next_token)
+    @store.register_discovered_tenant(12, next_generation, next_token)
+    assert_equal [12, "tenant"], @store.enabled_tenants.sort_by(&:to_s),
+                 "an interrupted scan must not mass-disable prior members"
+    @store.complete_discovery(next_generation, next_token)
+
+    assert_equal [12], @store.enabled_tenants
+    refute_nil @store.read_state("tenant")
+    @store.release_discovery(next_token)
+
+    reactivation = @store.acquire_discovery
+    generation = @store.begin_discovery(reactivation)
+    @store.register_discovered_tenant("tenant", generation, reactivation)
+    @store.register_discovered_tenant(12, generation, reactivation)
+    @store.complete_discovery(generation, reactivation)
+    assert_equal [12, "tenant"], @store.enabled_tenants.sort_by(&:to_s)
+    assert_equal state.cursor, @store.read_state("tenant").cursor
+  ensure
+    @store.release_discovery(token) if token
+    @store.release_discovery(next_token) if next_token
+    @store.release_discovery(reactivation) if reactivation
+  end
+
+  def test_paused_tenant_retains_progress_and_cannot_be_claimed
+    @store.initialize_state("tenant", Time.utc(2025, 1, 1))
+    @store.pause_tenant("tenant")
+
+    assert @store.tenant_paused?("tenant")
+    assert_nil @store.acquire("tenant")
+    assert_equal [12, "tenant"], @store.enabled_tenants.sort_by(&:to_s)
+
+    @store.resume_tenant("tenant")
+    refute @store.tenant_paused?("tenant")
+    assert_equal Time.utc(2025, 1, 1), @store.read_state("tenant").cursor
+    refute_nil @store.acquire("tenant")
+  end
+
   # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
   def test_consistent_assignment_respects_worker_capacity
     low_capacity = build_store(worker_id: "low-capacity")

@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "async"
+require "active_support/notifications"
 
 # Each test exercises a complete Async interleaving; keep its setup and observed
 # invariants next to each other rather than extracting opaque test machinery.
@@ -49,6 +50,41 @@ class TestRuntime < Minitest::Test
       @time += duration
       Async::Task.current.yield
       nil
+    end
+  end
+
+  class MemoryDiscoveryOwnership < Acp::LocalOwnership
+    def initialize
+      super
+      @tenant_ids = []
+    end
+
+    def acquire_discovery
+      true
+    end
+
+    def discovery_renewal_interval
+      1
+    end
+
+    def renew_discovery(_token)
+      true
+    end
+
+    def begin_discovery(_token)
+      true
+    end
+
+    def register_discovered_tenant(tenant_id, _generation, _token)
+      @tenant_ids << tenant_id unless @tenant_ids.include?(tenant_id)
+    end
+
+    def complete_discovery(_generation, _token); end
+
+    def release_discovery(_token); end
+
+    def enabled_tenants
+      @tenant_ids.dup
     end
   end
 
@@ -126,7 +162,8 @@ class TestRuntime < Minitest::Test
 
       Async do |root|
         task = root.async { runtime.run }
-        Kernel.sleep(0.01)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+        Kernel.sleep(0.001) while starts.length < 2 && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
         task.stop
       end
 
@@ -270,5 +307,136 @@ class TestRuntime < Minitest::Test
     assert_equal 0, runtime.metrics[:active_cycles]
     assert_equal 0, runtime.metrics[:active_fetches]
   end
+
+  def test_periodic_discovery_adds_tenants_without_restarting_runtime
+    tenant_ids = ["a"]
+    fetches = Hash.new(0)
+    program = Class.new(Acp::Program) do
+      define_singleton_method(:name) { "DynamicDiscoveryTest" }
+      interval 60
+      discovery_interval 0.02
+      fetch_concurrency 2
+      ingest_concurrency 1
+      pipeline_capacity 2
+      tenants { |emit| tenant_ids.each { |tenant_id| emit.call(tenant_id) } }
+      initial_cursor { |_tenant_id| Time.utc(2025, 1, 1) }
+      resolve { |tenant_id| tenant_id }
+      fetch do |_tenant, context|
+        fetches[context.tenant_id] += 1
+        Acp::Batch.new(data: [], next_cursor: context.cursor)
+      end
+      ingest { |_batch, _context| }
+    end
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new,
+                               ownership: MemoryDiscoveryOwnership.new)
+
+    Async do |root|
+      task = root.async { runtime.run }
+      Kernel.sleep(0.03)
+      tenant_ids << "b"
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+      Kernel.sleep(0.005) while fetches["b"].zero? && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      runtime.request_shutdown(timeout: 1)
+      task.wait
+    end
+
+    assert_operator fetches["b"], :>=, 1
+    assert_equal 0, runtime.metrics[:active_cycles]
+  end
+
+  def test_graceful_shutdown_finishes_active_ingestion_before_returning
+    fetch_started = false
+    ingested = false
+    program = build_program(
+      interval: 0.01,
+      fetch: lambda do |_tenant, context|
+        fetch_started = true
+        Kernel.sleep(0.03)
+        Acp::Batch.new(data: [], next_cursor: context.cursor)
+      end,
+      ingest: ->(_batch, _context) { ingested = true }
+    )
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, drain_timeout: 1)
+
+    Async do |root|
+      task = root.async { runtime.run }
+      Kernel.sleep(0.005) until fetch_started
+      runtime.request_shutdown
+      task.wait
+    end
+
+    assert ingested
+    assert_equal 0, runtime.metrics[:active_cycles]
+    assert_equal 0, runtime.metrics[:active_ingests]
+  end
+
+  def test_drain_deadline_unwinds_ingestion_before_releasing_ownership
+    order = []
+    ingest_started = false
+    ownership = Object.new
+    ownership.define_singleton_method(:acquire) { |_tenant_id| "lease" }
+    ownership.define_singleton_method(:release) { |_tenant_id, _token| order << :released }
+    program = build_program(
+      interval: 0.001,
+      ingest: lambda do |_batch, _context|
+        ingest_started = true
+        begin
+          Kernel.sleep(60)
+        ensure
+          order << :ingestion_unwound
+        end
+      end
+    )
+    runtime = Acp::Runtime.new(
+      configuration: program.configuration,
+      progress: MemoryProgress.new,
+      ownership: ownership,
+      drain_timeout: 0.03
+    )
+
+    Async do |root|
+      task = root.async { runtime.run }
+      Kernel.sleep(0.001) until ingest_started
+      runtime.request_shutdown(timeout: 0.03)
+      task.wait
+    end
+
+    assert_equal %i[ingestion_unwound released], order
+    assert_equal 0, runtime.metrics[:active_ingests]
+  end
+
+  # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+  def test_notifications_include_diagnostics_without_batch_or_error_bodies
+    payloads = []
+    subscription = ActiveSupport::Notifications.subscribe(/\.acp\z/) do |name, _start, _finish, _id, payload|
+      payloads << [name, payload]
+    end
+    secret = "private-credential-and-payload"
+    program = build_program(
+      interval: 0.001,
+      fetch: ->(_tenant, context) { Acp::Batch.new(data: [secret], next_cursor: context.cursor) }
+    )
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+
+    Async do |root|
+      task = root.async { runtime.run }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+      Kernel.sleep(0.001) while payloads.none? { |name, _payload| name == "poll_completed.acp" } &&
+                                Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      runtime.request_shutdown(timeout: 1)
+      task.wait
+    end
+
+    event_payloads = payloads.map(&:last)
+    refute_empty event_payloads
+    assert(event_payloads.any? { |payload| payload[:program] == program.configuration.name })
+    assert(event_payloads.any? { |payload| payload[:tenant_id] == "a" && payload[:poll_id] })
+    refute_includes event_payloads.inspect, secret
+    refute(event_payloads.any? { |payload| payload.key?(:data) })
+    refute_includes runtime.metrics.keys, :tenant_id
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscription) if subscription
+  end
+  # rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 end
 # rubocop:enable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize, Metrics/ParameterLists

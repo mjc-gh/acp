@@ -179,8 +179,11 @@ and `acknowledge(tenant_id, poll_id, cursor)`. Initialization must be
 idempotent and return the stored cursor. Acknowledgement must be idempotent by
 `poll_id`; it is retried independently after ingestion returns, which represents
 a confirmed consumer commit. Runtime cancellation propagates through callback,
-retry, queue, and worker waits. Stop the surrounding Async task to shut the
-runtime down.
+retry, queue, and worker waits. Stop the surrounding Async task for immediate
+cancellation, or call `runtime.request_shutdown(timeout: 30)` to stop scheduling
+new cycles and drain active work to a bounded deadline. At the deadline,
+outstanding tasks are cancelled. Use `pause_tenant(id)` and `resume_tenant(id)` to
+pause polling without resetting its committed cursor.
 
 An optional ownership adapter implements `acquire(tenant_id)` and
 `release(tenant_id, token)`. A false/nil acquisition skips that cycle and tries
@@ -274,6 +277,77 @@ worker group bounded by both ingest concurrency and pipeline capacity. Successfu
 cycles become due at `max(cycle_start + interval, acknowledgement_time)`. A
 failed cycle is isolated and rescheduled after one interval; stage retries retain
 their cursor, poll ID, resolved context, or batch as appropriate.
+
+## Dedicated Rails worker
+
+The gem packages `acp-worker`. It boots the Rails environment, resolves the
+program and transaction-owner constants, validates the Rails/PostgreSQL pool
+budget, creates Redis coordination, and runs one reactor in the current process.
+It does not fork Rails or manage replicas; run multiple processes under systemd,
+Kubernetes, Nomad, or another supervisor:
+
+```sh
+bundle exec acp-worker \
+  --rails config/environment \
+  --program TenantSync \
+  --transaction-owner ApplicationRecord \
+  --application billing \
+  --environment production \
+  --lease-ttl 60 \
+  --discovery-interval 60 \
+  --drain-timeout 30
+```
+
+Options can also be supplied as `ACP_PROGRAM`, `ACP_TRANSACTION_OWNER`,
+`ACP_APPLICATION`, `ACP_ENVIRONMENT`, `ACP_WORKER_ID`, `ACP_PIPELINE_CAPACITY`,
+`ACP_FETCH_CONCURRENCY`, `ACP_INGEST_CONCURRENCY`, `ACP_LEASE_TTL`,
+`ACP_DISCOVERY_INTERVAL`, and `ACP_DRAIN_TIMEOUT`; `REDIS_URL` configures Redis.
+`ACP_NAMESPACE` aliases the application component of the Redis namespace.
+By default, the worker ID combines `HOSTNAME` and the process ID; set
+`ACP_WORKER_ID` when the supervisor provides a stable unique process identity.
+Capacity overrides are validated against the selected Rails pool before polling
+starts. Startup/configuration failures exit with status 78; runtime failures exit
+nonzero so the supervisor can restart the process.
+
+`SIGTERM` and `SIGINT` start a bounded drain. The worker stops acquiring new
+cycles, allows active fetch/ingestion/commit/cursor work to finish until the drain
+deadline, then cancels remaining tasks and exits. Set the supervisor's termination
+grace period slightly longer than `ACP_DRAIN_TIMEOUT`. A force-killed process is
+recovered through lease expiry and replay from committed progress. Use rolling
+deployments with enough remaining replicas to serve work during the drain window.
+
+Discovery runs under a renewable Redis coordinator lease. Each emitted tenant is
+registered incrementally, while membership removals are applied only after a full
+enumeration completes. An interrupted or failed scan leaves prior membership
+intact. Disabled tenants stop receiving new cycles; their progress is retained and
+reactivation resumes from that cursor. Pausing and resuming is also persisted by
+Redis. `discovery_interval` controls re-enumeration and `retry_cooldown` controls
+the delay following exhausted failures.
+
+With Rails loaded, lifecycle events are published as `*.acp`
+`ActiveSupport::Notifications` events. They include program, worker, tenant, poll,
+stage, attempt, duration, and classified error type, but omit credentials,
+exception messages, and batch bodies. Use tenant IDs for event-level diagnostics;
+aggregate metrics from `runtime.metrics` without tenant labels. The metrics
+snapshot includes assigned tenants, active fetches/cycles/ingests, queue wait,
+ingestion duration, cursor-update delay, retries, polling lag, discovery health,
+and lease renewal misses. `runtime.health` reports running/stopping state and the
+same aggregate snapshot; Redis `worker_statuses` reports live worker capacity and
+activity.
+
+Size the Rails pool for at least
+`pipeline_capacity + min(ingest_concurrency, pipeline_capacity)` plus web/job
+headroom; startup enforces that minimum. Redis opens a dedicated connection per
+command to keep lease renewal independent of blocked commands. Budget Redis
+connections for each worker's active cycles, heartbeat, discovery and progress
+operations, plus other application clients. Scale replica count and pipeline
+capacity within those limits. Acp leaves process supervision and replica scaling
+to the deployment environment.
+
+Programs that reuse reactor-local API clients can define a class method
+`acp_shutdown`; the executable calls it inside the Rails executor after a graceful
+runtime exit. Close reusable clients there. Clients scoped to one callback should
+be closed by that callback's own ensure block.
 
 See [`examples/tenant_sync.rb`](examples/tenant_sync.rb) for a load-safe consumer
 definition. Requiring it does not run discovery or open connections.

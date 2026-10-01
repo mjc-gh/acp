@@ -98,7 +98,9 @@ module Acp
           interval: configuration.interval,
           fetch_concurrency: configuration.fetch_concurrency,
           ingest_concurrency: configuration.ingest_concurrency,
-          pipeline_capacity: configuration.pipeline_capacity
+          pipeline_capacity: configuration.pipeline_capacity,
+          discovery_interval: configuration.discovery_interval,
+          retry_cooldown: configuration.retry_cooldown
         }
       end
 

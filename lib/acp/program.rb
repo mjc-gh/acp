@@ -3,7 +3,8 @@
 module Acp
   # Class-level DSL for declaring one tenant polling program.
   class Program
-    SETTING_NAMES = %i[interval fetch_concurrency ingest_concurrency pipeline_capacity].freeze
+    SETTING_NAMES = %i[interval fetch_concurrency ingest_concurrency pipeline_capacity discovery_interval
+                       retry_cooldown].freeze
     CALLBACK_NAMES = %i[tenants initial_cursor resolve fetch ingest].freeze
 
     class << self
