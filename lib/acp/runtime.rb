@@ -86,6 +86,11 @@ module Acp
       worker_count = [@configuration.ingest_concurrency, @configuration.pipeline_capacity].min
       worker_count.times { task.async { ingestion_worker(queue) } }
       states = discover
+      @ownership.register_tenants(states.map(&:tenant_id)) if @ownership.respond_to?(:register_tenants)
+      if @ownership.respond_to?(:heartbeat_worker)
+        @ownership.heartbeat_worker(capacity: @configuration.pipeline_capacity, active: 0)
+      end
+      worker_heartbeat = start_worker_heartbeat
       heap = DueHeap.new
       states.each { |state| heap.push(state) }
       active = 0
@@ -101,10 +106,17 @@ module Acp
           @metrics[:active_cycles] += 1
           @metrics[:max_active_cycles] = [@metrics[:max_active_cycles], @metrics[:active_cycles]].max
           task.async do
-            due = run_cycle(state.tenant_id)
-            events.push([state, due])
-          ensure
-            @metrics[:active_cycles] -= 1
+            due = @clock.now + @configuration.interval
+            begin
+              due = run_cycle(state.tenant_id)
+            ensure
+              @metrics[:active_cycles] -= 1
+              begin
+                Async::Task.current.defer_stop { events.push([state, due]) }
+              rescue Async::Queue::ClosedError
+                nil
+              end
+            end
           end
         end
 
@@ -127,6 +139,7 @@ module Acp
       end
     ensure
       if running
+        worker_heartbeat&.stop
         queue&.close
         drain_ingest_queue(queue) if queue
         @running = false
@@ -161,35 +174,56 @@ module Acp
       ownership_token = @ownership.acquire(tenant_id)
       return @clock.now + @configuration.interval unless ownership_token
 
-      cursor = read_or_initialize_cursor(tenant_id)
+      lease_state = { lost: false }
+      heartbeat = start_lease_heartbeat(tenant_id, ownership_token, lease_state)
+      progress_state = read_or_initialize_cursor(tenant_id)
+      cursor = progress_state.cursor
       poll_id = Context.new_poll_id
       tenant = @configuration.callback(:resolve).call(tenant_id)
+      ensure_ownership!(tenant_id, ownership_token, lease_state)
       batch = retry_stage(@configuration.fetch_retry, :fetch, tenant_id) do |attempt|
         context = FetchContext.new(tenant_id: tenant_id, cursor: cursor, poll_id: poll_id, attempt: attempt)
         fetch(tenant, context)
       end
       batch.validate_after!(cursor)
+      ensure_ownership!(tenant_id, ownership_token, lease_state)
       ingest(batch, tenant_id, cursor, poll_id)
-      acknowledge(tenant_id, poll_id, batch.next_cursor)
+      ensure_ownership!(tenant_id, ownership_token, lease_state)
+      acknowledge(tenant_id, poll_id, batch.next_cursor, progress_state.revision, ownership_token)
       [started_at + @configuration.interval, @clock.now].max
+    rescue LeaseLostError, ProgressConflictError => e
+      report_error(tenant_id, e, :ownership)
+      @clock.now + @configuration.interval
     rescue Acp::RuntimeError
       raise
     rescue StandardError => e
       report_error(tenant_id, e, :cycle)
       @clock.now + @configuration.interval
     ensure
+      heartbeat&.stop
       release_ownership(tenant_id, ownership_token) if ownership_token
     end
 
     def read_or_initialize_cursor(tenant_id)
+      if @progress.respond_to?(:read_state)
+        state = @progress.read_state(tenant_id)
+        return state if state
+
+        initial = Timestamp.normalize(@configuration.callback(:initial_cursor).call(tenant_id))
+        initialized = @progress.initialize_state(tenant_id, initial)
+        raise Acp::RuntimeError, "progress initialization returned no cursor" if initialized.nil?
+
+        return initialized
+      end
+
       cursor = @progress.read(tenant_id)
-      return Timestamp.normalize(cursor) unless cursor.nil?
+      return ProgressSnapshot.new(cursor: Timestamp.normalize(cursor), revision: nil) unless cursor.nil?
 
       initial = Timestamp.normalize(@configuration.callback(:initial_cursor).call(tenant_id))
       initialized = @progress.initialize_cursor(tenant_id, initial)
       raise Acp::RuntimeError, "progress initialization returned no cursor" if initialized.nil?
 
-      Timestamp.normalize(initialized)
+      ProgressSnapshot.new(cursor: Timestamp.normalize(initialized), revision: nil)
     end
 
     def fetch(tenant, context)
@@ -256,12 +290,16 @@ module Acp
 
     # Once ingestion has returned, its commit is confirmed. Retrying only this
     # idempotent progress operation avoids replaying already-committed batches.
-    def acknowledge(tenant_id, poll_id, cursor)
+    def acknowledge(tenant_id, poll_id, cursor, revision, ownership_token)
       attempt = 1
       started_at = @clock.now
       loop do
         Async::Task.current.defer_stop do
-          @progress.acknowledge(tenant_id, poll_id, cursor)
+          if @progress.respond_to?(:advance)
+            @progress.advance(tenant_id, poll_id, cursor, expected_revision: revision, lease: ownership_token)
+          else
+            @progress.acknowledge(tenant_id, poll_id, cursor)
+          end
         end
         return
       rescue StandardError => e
@@ -299,6 +337,7 @@ module Acp
 
     def fatal_error?(error)
       error.is_a?(Acp::RuntimeError) ||
+        error.is_a?(LeaseLostError) || error.is_a?(ProgressConflictError) ||
         error.is_a?(CancellationError) ||
         [Interrupt, SystemExit, SignalException, NoMemoryError].any? { |klass| error.is_a?(klass) } ||
         error.class.ancestors.any? { |ancestor| ancestor.name&.match?(/\AAsync::(?:.*::)?(?:Stop|Cancel)\z/) }
@@ -314,6 +353,53 @@ module Acp
       raise
     rescue StandardError => e
       report_error(tenant_id, e, :ownership_release)
+    end
+
+    ProgressSnapshot = Struct.new(:cursor, :revision, keyword_init: true)
+
+    def start_lease_heartbeat(tenant_id, token, lease_state)
+      return unless @ownership.respond_to?(:renewal_interval) && @ownership.respond_to?(:renew)
+
+      cycle_task = Async::Task.current
+      Async::Task.current.async do
+        loop do
+          @clock.sleep(@ownership.renewal_interval(token))
+          next if @ownership.renew(tenant_id, token)
+
+          lease_state[:lost] = true
+          cycle_task.stop
+        end
+      rescue StandardError => e
+        lease_state[:lost] = true
+        report_error(tenant_id, e, :ownership_renewal)
+        cycle_task.stop
+      end
+    end
+
+    def start_worker_heartbeat
+      return unless @ownership.respond_to?(:heartbeat_worker)
+
+      interval = @ownership.respond_to?(:renewal_interval) ? @ownership.renewal_interval(nil) : 10
+      Async::Task.current.async do
+        loop do
+          @ownership.heartbeat_worker(
+            capacity: @configuration.pipeline_capacity,
+            active: @metrics[:active_cycles]
+          )
+          @clock.sleep(interval)
+        rescue StandardError => e
+          report_error(nil, e, :worker_heartbeat)
+          @clock.sleep([interval, 1].max)
+        end
+      end
+    end
+
+    def ensure_ownership!(tenant_id, token, lease_state)
+      raise LeaseLostError, "ownership lease was lost for tenant #{tenant_id}" if lease_state[:lost]
+      return unless @ownership.respond_to?(:valid?) && !@ownership.valid?(tenant_id, token)
+
+      lease_state[:lost] = true
+      raise LeaseLostError, "ownership lease was lost for tenant #{tenant_id}"
     end
 
     def record_queued_batch

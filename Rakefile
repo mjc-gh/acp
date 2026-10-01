@@ -10,6 +10,11 @@ namespace :test do
     task.libs << "integration"
     task.test_globs = ["integration/**/*_test.rb"]
   end
+
+  Minitest::TestTask.create(:redis) do |task|
+    task.libs << "integration"
+    task.test_globs = ["integration/redis_test.rb"]
+  end
 end
 
 require "rubocop/rake_task"

@@ -8,4 +8,7 @@ module Acp
   class InvalidBatchError < RuntimeError; end
   class CursorRegressionError < RuntimeError; end
   class CancellationError < StandardError; end
+  class LeaseLostError < Error; end
+  class ProgressConflictError < Error; end
+  class MissingProgressError < Error; end
 end

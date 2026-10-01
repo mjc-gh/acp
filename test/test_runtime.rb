@@ -235,5 +235,40 @@ class TestRuntime < Minitest::Test
     assert_equal 0, runtime.metrics[:queued_batches]
     assert_equal 0, runtime.metrics[:active_ingests]
   end
+
+  def test_lost_lease_cancels_outstanding_fetch_before_ingestion
+    fetch_stopped = []
+    ingestions = []
+    ownership = Object.new
+    ownership.define_singleton_method(:acquire) { |_tenant_id| "lease" }
+    ownership.define_singleton_method(:release) { |_tenant_id, _token| nil }
+    ownership.define_singleton_method(:renewal_interval) { |_token| 0.01 }
+    ownership.define_singleton_method(:renew) { |_tenant_id, _token| false }
+    program = build_program(
+      fetch: lambda do |_tenant, _context|
+        Kernel.sleep(60)
+      ensure
+        fetch_stopped << true
+      end,
+      ingest: ->(_batch, _context) { ingestions << true }
+    )
+    runtime = Acp::Runtime.new(
+      configuration: program.configuration,
+      progress: MemoryProgress.new,
+      ownership: ownership
+    )
+
+    Async do |root|
+      task = root.async { runtime.run }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+      Kernel.sleep(0.005) while fetch_stopped.empty? && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      task.stop
+    end
+
+    refute_empty fetch_stopped
+    assert_empty ingestions
+    assert_equal 0, runtime.metrics[:active_cycles]
+    assert_equal 0, runtime.metrics[:active_fetches]
+  end
 end
 # rubocop:enable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize, Metrics/ParameterLists

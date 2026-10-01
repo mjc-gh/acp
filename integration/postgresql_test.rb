@@ -5,6 +5,7 @@ ENV["RAILS_ENV"] ||= "test"
 require "rails"
 require "active_record"
 require_relative "../test/rails_app/config/application"
+require "acp/redis"
 
 AcpRailsTestApp::Application.initialize!
 require "acp/rails"
@@ -28,6 +29,41 @@ end
 # belong to the test consumer; Acp itself creates no schema.
 # rubocop:disable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize
 class TestAcpPostgresIngestion < Minitest::Test
+  # Redis client wrapper that drops one successful advancement response.
+  class LostAdvanceReplyClient
+    def initialize(client, fault)
+      @client = client
+      @fault = fault
+    end
+
+    def eval(script, **options)
+      if script == Acp::RedisCoordinator::ADVANCE_SCRIPT && @fault[:before]
+        @fault[:before] = false
+        @fault[:occurred] = true
+        raise IOError, "simulated Redis outage before progress advancement"
+      end
+      result = @client.eval(script, **options)
+      if script == Acp::RedisCoordinator::ADVANCE_SCRIPT && @fault[:pending]
+        @fault[:pending] = false
+        @fault[:occurred] = true
+        raise IOError, "simulated lost Redis response after committed advancement"
+      end
+      result
+    end
+
+    def method_missing(name, ...)
+      @client.public_send(name, ...)
+    end
+
+    def respond_to_missing?(name, include_private = false)
+      @client.respond_to?(name, include_private) || super
+    end
+
+    def close
+      @client.close
+    end
+  end
+
   # Small progress adapter keeps integration assertions on real SQL destinations.
   class MemoryProgress
     attr_reader :acknowledgements
@@ -266,6 +302,96 @@ class TestAcpPostgresIngestion < Minitest::Test
     assert_operator attempts, :>=, 1
     assert_equal 1, AcpPostgresEvent.count
     assert_empty progress.acknowledgements
+  end
+
+  def test_confirmed_postgres_commit_reconciles_a_lost_redis_advance_response
+    url = ENV.fetch("ACP_TEST_REDIS_URL")
+    application = "acp-postgres-redis-#{Process.pid}-#{SecureRandom.hex(6)}"
+    fault = { pending: true, occurred: false }
+    coordinator = Acp::RedisCoordinator.new(
+      application: application,
+      environment: "test",
+      program: "commit-boundary",
+      redis_url: url,
+      connection_factory: -> { LostAdvanceReplyClient.new(Redis.new(url: url), fault) },
+      worker_id: "postgres-test-worker",
+      lease_ttl: 6
+    )
+    program = build_program(
+      tenants: ["redis-commit"],
+      ingest: ->(_batch, context) { AcpPostgresEvent.create!(event_key: context.tenant_id) }
+    )
+    runtime = Acp::Runtime.new(configuration: configuration(program), progress: coordinator, ownership: coordinator)
+
+    run_until(runtime, timeout: 5) do
+      fault[:occurred] && coordinator.read_state("redis-commit")&.revision == 1
+    end
+
+    assert_equal 1, AcpPostgresEvent.where(event_key: "redis-commit").count
+    assert_equal 1, coordinator.read_state("redis-commit").revision
+    assert fault[:occurred]
+  ensure
+    if coordinator
+      prefix = coordinator.instance_variable_get(:@prefix)
+      redis = Redis.new(url: url)
+      keys = redis.scan_each(match: "#{prefix}:*").to_a
+      redis.del(keys) unless keys.empty?
+      redis.close
+    end
+  end
+
+  def test_commit_before_progress_failure_replays_safely_on_runtime_restart
+    url = ENV.fetch("ACP_TEST_REDIS_URL")
+    application = "acp-postgres-replay-#{Process.pid}-#{SecureRandom.hex(6)}"
+    fault = { before: true, occurred: false }
+    coordinator = Acp::RedisCoordinator.new(
+      application: application,
+      environment: "test",
+      program: "commit-replay",
+      redis_url: url,
+      connection_factory: -> { LostAdvanceReplyClient.new(Redis.new(url: url), fault) },
+      worker_id: "postgres-replay-worker",
+      lease_ttl: 6
+    )
+    ingestions = 0
+    program = build_program(
+      tenants: ["redis-replay"],
+      ingest: lambda do |_batch, context|
+        ingestions += 1
+        AcpPostgresEvent.find_or_create_by!(event_key: context.tenant_id)
+      end
+    )
+    first_runtime = Acp::Runtime.new(
+      configuration: configuration(program),
+      progress: coordinator,
+      ownership: coordinator
+    )
+
+    run_until(first_runtime, timeout: 5) { fault[:occurred] }
+    assert_equal 1, AcpPostgresEvent.where(event_key: "redis-replay").count
+    assert_equal 0, coordinator.read_state("redis-replay").revision
+
+    fault[:before] = false
+    restarted_runtime = Acp::Runtime.new(
+      configuration: configuration(program),
+      progress: coordinator,
+      ownership: coordinator
+    )
+    run_until(restarted_runtime, timeout: 5) do
+      coordinator.read_state("redis-replay")&.revision == 1
+    end
+
+    assert_equal 2, ingestions
+    assert_equal 1, AcpPostgresEvent.where(event_key: "redis-replay").count
+    assert_equal Time.utc(2025, 1, 1), coordinator.read_state("redis-replay").cursor
+  ensure
+    if coordinator
+      prefix = coordinator.instance_variable_get(:@prefix)
+      redis = Redis.new(url: url)
+      keys = redis.scan_each(match: "#{prefix}:*").to_a
+      redis.del(keys) unless keys.empty?
+      redis.close
+    end
   end
 end
 # rubocop:enable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize

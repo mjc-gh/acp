@@ -126,10 +126,11 @@ transformations and blocking native calls inside callbacks can still stall the
 reactor. Validate the full Rails/pool/adapter stack when changing versions or
 customizing adapters.
 
-Run the PostgreSQL integration task locally with a PostgreSQL database available:
+Run the PostgreSQL and Redis integration task locally with both services available:
 
 ```sh
 ACP_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/acp_test \
+  ACP_TEST_REDIS_URL=redis://127.0.0.1:6379/15 \
   bundle exec rake test:postgres
 ```
 
@@ -188,6 +189,81 @@ An optional `on_error` callable receives `(tenant_id, error, stage)` for
 recoverable tenant and acknowledgement failures. Tests and embedded runtimes can
 inject a clock implementing `now`, `sleep(duration)`, and `wait(duration) { ... }`;
 the default clock uses monotonic process time and Async-aware waits.
+
+## Redis coordination
+
+Load `acp/redis` explicitly and share one coordinator between runtime progress
+and ownership:
+
+```ruby
+require "acp/redis"
+
+coordinator = Acp::RedisCoordinator.new(
+  application: "billing",
+  environment: ENV.fetch("RAILS_ENV"),
+  program: TenantSync.name,
+  redis_url: ENV.fetch("REDIS_URL"),
+  worker_id: ENV.fetch("HOSTNAME"),
+  lease_ttl: 60
+)
+runtime = Acp::Runtime.new(
+  configuration: TenantSync.configuration,
+  progress: coordinator,
+  ownership: coordinator
+)
+Async { runtime.run }
+```
+
+Tenant IDs must be strings or integers; their type is encoded into the identity,
+so integer `12` and string `"12"` never collide. Redis keys are versioned and
+scoped by application, environment, and program. The coordinator registers the
+discovered tenant set, assigns tenants among live workers using a capacity-weighted
+consistent hash, and claims them atomically. Claims, worker scans, and discovery
+scans are bounded (the default maximum live workers is 256; configure
+`worker_scan_limit` for a larger deployment). Worker health is refreshed
+independently; when a worker appears or expires, assignments converge as tenant
+cycles reach safe boundaries. Each in-flight lease renews at one-third of its
+configured duration using Redis server time. A worker that cannot confirm renewal
+stops starting work for that cycle.
+
+Cursor state has no lease TTL. Initialization records a permanent marker so an
+unexpectedly missing progress hash raises `Acp::MissingProgressError` rather than
+silently resetting a previously known tenant. Advancement checks the lease token,
+expected revision, monotonic timestamp, and poll ID in one Lua script. Repeating
+the same poll ID resolves a lost response; even an unchanged timestamp increments
+the revision. Runtime retains the batch reservation after a confirmed database
+commit while retrying Redis. If ownership is lost, the next owner replays from
+durable progress. Redis leases cannot fence PostgreSQL: an old process can still
+commit a transaction after takeover, so ingestion must be idempotent and safe for
+out-of-order replay.
+
+The client opens a dedicated Redis connection per command. This avoids a blocked
+command monopolizing the connection used for renewal; use a Redis endpoint and
+server connection limit sized for active runtime operations. It uses ordinary
+Redis Ruby sockets, which cooperate with Ruby's fiber scheduler. Use a single
+writable Redis primary for v1. Redis Cluster is unsupported because the atomic
+scripts touch multiple keys without a cluster hash-tag layout.
+
+Configure Redis for durable, non-evicting coordination data: use a `noeviction`
+policy, persistence appropriate to the acceptable recovery-point objective, and
+backups that include all `acp:v1:*` keys. A primary failover can lose recently
+acknowledged writes if replication is asynchronous; after failover, replay-safe
+ingestion is still required. Restore Redis and PostgreSQL from a mutually
+consistent backup where possible. If progress may be ahead of the restored
+database, reset only the affected program namespace to a cursor known to be no
+later than restored database effects; never delete only progress keys or lease
+keys as a routine recovery action. A deliberate full reset removes the namespace
+after workers are stopped and requires replay-safe destination writes.
+
+Run process-level Redis coordination tests against a disposable Redis database:
+
+```sh
+ACP_TEST_REDIS_URL=redis://127.0.0.1:6379/15 bundle exec rake test:redis
+```
+
+The integration task exercises process termination and lease expiry, conditional
+progress updates, response-loss reconciliation, and renewal during a fetch longer
+than the lease's initial duration.
 
 The scheduler staggers first due times deterministically per program and tenant,
 uses a fair due-time heap, and creates no per-tenant waiting tasks. Pipeline
