@@ -331,9 +331,11 @@ exception messages, and batch bodies. Use tenant IDs for event-level diagnostics
 aggregate metrics from `runtime.metrics` without tenant labels. The metrics
 snapshot includes assigned tenants, active fetches/cycles/ingests, queue wait,
 ingestion duration, cursor-update delay, retries, polling lag, discovery health,
-and lease renewal misses. `runtime.health` reports running/stopping state and the
-same aggregate snapshot; Redis `worker_statuses` reports live worker capacity and
-activity.
+lease acquisition/skips, completed cycles, and lease renewal misses. Polling lag
+p50/p95/p99 values come from a fixed-size histogram and are reported as bucket
+upper bounds, so metrics memory does not grow with runtime duration.
+`runtime.health` reports running/stopping state and the same aggregate snapshot;
+Redis `worker_statuses` reports live worker capacity and activity.
 
 Size the Rails pool for at least
 `pipeline_capacity + min(ingest_concurrency, pipeline_capacity)` plus web/job
@@ -352,6 +354,91 @@ be closed by that callback's own ensure block.
 See [`examples/tenant_sync.rb`](examples/tenant_sync.rb) for a load-safe consumer
 definition. Requiring it does not run discovery or open connections.
 
+For mutable destination rows, use a unique event key and compare source versions
+inside the database upsert. [`examples/versioned_importer.rb`](examples/versioned_importer.rb)
+shows a PostgreSQL importer that deduplicates identical events and ignores older
+replays, including a delayed transaction from a former lease owner. The example's
+integration test verifies that stale data cannot replace the newer row.
+
+## Reliability, load tests, and support matrix
+
+`test/fixtures/reliability_upstream.rb` is a seeded Async-compatible source with
+configurable latency ranges, timeout/disconnect/slow responses, payload sizes,
+record counts, and timestamp windows. The default CI suite tests the bounded
+runtime and fixture behavior. Redis and PostgreSQL fault tests use disposable
+services and are run separately with `test:redis` and `test:postgres`; together
+they cover process termination/lease expiry, renewal during slow fetch, Redis
+outage and lost advancement replies, transaction rollback/cancellation, deadlock
+retry, commit-before-progress replay, and progress only after confirmed commit.
+Normal Redis lease exclusivity is asserted separately from replay safety after
+takeover: an old owner cannot mutate Redis state, but PostgreSQL may still accept
+its transaction, so destination version checks remain required.
+
+The local scheduler/load harness uses in-memory progress and isolates local
+capacity and memory behavior:
+
+```sh
+ACP_BENCH_TENANTS=30000 ACP_BENCH_DURATION=70 \
+  ACP_BENCH_FETCH_CONCURRENCY=100 ACP_BENCH_INGEST_CONCURRENCY=16 \
+  ACP_BENCH_PIPELINE_CAPACITY=256 bundle exec rake benchmark:runtime
+```
+
+The full service benchmark starts independent worker subprocesses against the
+configured PostgreSQL and Redis services, and defaults to 30,000 tenants, worker
+counts 1 and 2, and 160 seconds per worker count:
+
+```sh
+docker compose up -d --wait
+ACP_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/acp_test \
+ACP_TEST_REDIS_URL=redis://127.0.0.1:6379/15 \
+ACP_BENCH_TENANTS=30000 ACP_BENCH_DURATION=160 ACP_BENCH_WORKERS=1,2 \
+bundle exec rake benchmark:services
+docker compose down
+```
+
+Its nominal defaults use a seeded uniform 1–19 second fetch latency (10 seconds
+average), 2,500 fetch/pipeline slots per worker, and 16 ingestion slots. Two
+workers therefore expose the plan's approximate 5,000 concurrent-request budget;
+the one-worker run is the redistribution comparison. These are benchmark inputs,
+not recommended production settings. Set the `ACP_BENCH_*` values to match the
+target API's latency tails, payload distribution, database pool budget, and Redis
+connection limit before treating the result as release evidence.
+
+Both commands accept `ACP_BENCH_*` controls for seed, duration, worker count,
+latency, payload size, interval, and each capacity. They print JSON with Ruby and
+dependency/server versions, configured and measured latency distribution,
+payload bytes, worker capacities, throughput, completion/lag percentiles,
+destination rows, active-task/batch maxima, and RSS. The service run also exposes
+per-worker ownership-acquisition and completion counts to compare work
+distribution and fairness. The local benchmark isolates scheduler overhead;
+only the service run includes Redis, PostgreSQL transactions, and multiple worker
+processes.
+
+Release gates are workload gates, not universal capacity promises. On the
+documented deployment shape, run at least 30,000 tenants with representative
+payload and latency distributions for at least two complete intervals and compare
+the 1-worker and 2-worker JSON reports. Require at least 500 successful cycles per
+second fleet-wide for a 30,000/minute target, no missed commit/progress
+invariants, no task or batch maxima above configured pipeline/ingestion bounds,
+all healthy tenants progressing, and no sustained RSS growth after warmup (less
+than 10% growth between the final two equal-duration windows). Record the exact
+CPU/memory limits, OS, Ruby and dependency/server versions, seed, durations,
+tenant and payload counts, latency percentiles, capacities, worker count,
+throughput, lag percentiles, and memory windows alongside the JSON report. A run
+that does not reach these thresholds is a failed gate; do not infer a release
+capacity from a shorter or smaller happy-path run. No production capacity result
+is claimed by this repository's CI smoke runs.
+
+The declared compatibility range is Ruby >= 3.2, Rails 8.0/8.1, Async 2.35–2.37,
+and `pg` 1.5/1.6 (Rails and `pg` are optional integration dependencies). CI runs
+the minimum/current Ruby versions and a combination matrix across these Rails,
+Async, and `pg` endpoints. The locked integration stack is also tested against
+PostgreSQL 17 and Redis 7. Run `bundle exec rake package:verify` to build locally,
+inspect the gem file list, and install `acp-worker` into a temporary directory;
+this does not publish a release.
+
 ## Development
 
-Run `bundle exec rake test` and `bundle exec rake rubocop` to verify changes.
+Run `bundle exec rake test`, `bundle exec rake rubocop`, and
+`bundle exec rake package:verify` to verify changes. The integration and service
+benchmark commands above require disposable PostgreSQL/Redis services.

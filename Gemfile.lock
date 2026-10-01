@@ -264,6 +264,7 @@ PLATFORMS
 
 DEPENDENCIES
   acp!
+  async (>= 2.35, < 2.38)
   irb
   minitest (~> 5.16)
   pg (~> 1.5)

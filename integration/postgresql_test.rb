@@ -5,6 +5,7 @@ ENV["RAILS_ENV"] ||= "test"
 require "rails"
 require "active_record"
 require_relative "../test/rails_app/config/application"
+require_relative "../examples/versioned_importer"
 require "acp/redis"
 
 AcpRailsTestApp::Application.initialize!
@@ -18,6 +19,11 @@ end
 # Second consumer-owned table used to force a real opposing-row deadlock.
 class AcpPostgresLockRow < ActiveRecord::Base
   self.table_name = "acp_postgres_lock_rows"
+end
+
+# Model for testing the example's version-aware consumer destination.
+class AcpPostgresVersionedRecord < ActiveRecord::Base
+  self.table_name = "acp_postgres_versioned_records"
 end
 
 # Fiber-local application state that Rails' executor must reset after callbacks.
@@ -98,6 +104,17 @@ class TestAcpPostgresIngestion < Minitest::Test
       table.string :lock_key, null: false
       table.integer :touches, null: false, default: 0
     end
+    connection.create_table(:acp_postgres_versioned_records) do |table|
+      table.string :external_id, null: false
+      table.datetime :source_updated_at, null: false, precision: 6
+      table.string :value, null: false
+    end
+    connection.add_index(
+      :acp_postgres_versioned_records,
+      :external_id,
+      unique: true,
+      name: "index_acp_versioned_records_on_external_id"
+    )
     connection.add_index(:acp_postgres_lock_rows, :lock_key, unique: true)
     %w[a b].each { |key| AcpPostgresLockRow.create!(lock_key: key) }
   end
@@ -105,6 +122,7 @@ class TestAcpPostgresIngestion < Minitest::Test
   def teardown
     ActiveRecord::Base.connection.drop_table(:acp_postgres_events, if_exists: true)
     ActiveRecord::Base.connection.drop_table(:acp_postgres_lock_rows, if_exists: true)
+    ActiveRecord::Base.connection.drop_table(:acp_postgres_versioned_records, if_exists: true)
   end
 
   def build_program(tenants:, ingest:, interval: 1)
@@ -302,6 +320,93 @@ class TestAcpPostgresIngestion < Minitest::Test
     assert_operator attempts, :>=, 1
     assert_equal 1, AcpPostgresEvent.count
     assert_empty progress.acknowledgements
+  end
+
+  def test_versioned_example_importer_deduplicates_and_ignores_stale_replays
+    current = Time.utc(2025, 1, 2)
+    old = Time.utc(2025, 1, 1)
+    VersionedImporter.call(
+      model: AcpPostgresVersionedRecord,
+      records: [{ external_id: "event-1", source_updated_at: current, value: "new" }]
+    )
+    VersionedImporter.call(
+      model: AcpPostgresVersionedRecord,
+      records: [
+        { external_id: "event-1", source_updated_at: old, value: "stale" },
+        { external_id: "event-1", source_updated_at: current, value: "duplicate" }
+      ]
+    )
+
+    record = AcpPostgresVersionedRecord.find_by!(external_id: "event-1")
+    assert_equal 1, AcpPostgresVersionedRecord.count
+    assert_equal current, record.source_updated_at
+    assert_equal "new", record.value
+  end
+
+  def test_expired_owner_can_commit_but_cannot_overwrite_newer_data_or_redis_progress
+    url = ENV.fetch("ACP_TEST_REDIS_URL")
+    application = "acp-stale-db-#{Process.pid}-#{SecureRandom.hex(6)}"
+    options = {
+      application: application,
+      environment: "test",
+      program: "stale-database-effect",
+      redis_url: url,
+      worker_id: "same-logical-worker",
+      lease_ttl: 3
+    }
+    coordinator = Acp::RedisCoordinator.new(**options)
+    replacement = Acp::RedisCoordinator.new(**options)
+    competing_errors = []
+    competing_thread = nil
+    # rubocop:disable Metrics/BlockLength
+    program = build_program(tenants: ["lease-race"], ingest: lambda do |_batch, _context|
+      competing_thread = Thread.new do
+        Kernel.sleep(3.2)
+        replacement.heartbeat_worker(capacity: 1, active: 0)
+        lease = replacement.acquire("lease-race")
+        raise "replacement did not acquire expired ownership" unless lease
+
+        state = replacement.read_state("lease-race")
+        VersionedImporter.call(
+          model: AcpPostgresVersionedRecord,
+          records: [
+            { external_id: "lease-race-event", source_updated_at: Time.utc(2025, 1, 3), value: "new" }
+          ]
+        )
+        replacement.advance(
+          "lease-race", "replacement-poll", Time.utc(2025, 1, 3),
+          expected_revision: state.revision, lease: lease
+        )
+      rescue StandardError => e
+        competing_errors << e
+      end
+      blocking_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 4
+      Thread.pass while Process.clock_gettime(Process::CLOCK_MONOTONIC) < blocking_deadline
+      VersionedImporter.call(
+        model: AcpPostgresVersionedRecord,
+        records: [
+          { external_id: "lease-race-event", source_updated_at: Time.utc(2025, 1, 2), value: "stale" }
+        ]
+      )
+    end)
+    # rubocop:enable Metrics/BlockLength
+    runtime = Acp::Runtime.new(configuration: configuration(program), progress: coordinator, ownership: coordinator)
+
+    run_until(runtime, timeout: 8) { competing_thread&.join(0) }
+
+    assert_empty competing_errors
+    assert_equal "new", AcpPostgresVersionedRecord.find_by!(external_id: "lease-race-event").value
+    assert_equal Time.utc(2025, 1, 3), coordinator.read_state("lease-race").cursor
+    assert_equal 1, coordinator.read_state("lease-race").revision
+  ensure
+    competing_thread&.join
+    if coordinator
+      prefix = coordinator.instance_variable_get(:@prefix)
+      redis = Redis.new(url: url)
+      keys = redis.scan_each(match: "#{prefix}:*").to_a
+      redis.del(keys) unless keys.empty?
+      redis.close
+    end
   end
 
   def test_confirmed_postgres_commit_reconciles_a_lost_redis_advance_response

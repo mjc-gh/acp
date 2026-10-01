@@ -8,23 +8,16 @@ Gem::Specification.new do |spec|
   spec.authors = ["Michael Coyne"]
   spec.email = ["mjc@hey.com"]
 
-  spec.summary = "A bounded, asynchronous tenant polling framework."
-  spec.description = "Define tenant discovery and fetch/ingest callbacks for asynchronous polling programs."
+  spec.summary = "A bounded asynchronous tenant-polling runtime."
+  spec.description = "Coordinate tenant polling with Async, transactional Rails ingestion, and Redis-backed " \
+                     "ownership and progress."
   spec.required_ruby_version = ">= 3.2.0"
 
-  # Uncomment the line below to require MFA for gem pushes.
-  # This helps protect your gem from supply chain attacks by ensuring
-  # no one can publish a new version without multi-factor authentication.
-  # See: https://guides.rubygems.org/mfa-requirement-opt-in/
-  # spec.metadata["rubygems_mfa_required"] = "true"
-
-  # Specify which files should be added to the gem when it is released.
-  # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
   gemspec = File.basename(__FILE__)
   spec.files = IO.popen(%w[git ls-files -z], chdir: __dir__, err: IO::NULL) do |ls|
     ls.readlines("\x0", chomp: true).reject do |f|
-      (f == gemspec) ||
-        f.start_with?(*%w[bin/ Gemfile .gitignore test/ .github/ .rubocop.yml])
+      (f == gemspec) || %w[AGENTS.md Rakefile compose.yaml].include?(f) ||
+        f.start_with?(*%w[bin/ Gemfile .gitignore test/ integration/ benchmark/ plans/ .github/ .rubocop.yml])
     end
   end
   spec.bindir = "exe"

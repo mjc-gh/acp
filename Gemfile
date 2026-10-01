@@ -11,8 +11,9 @@ gem "rake", "~> 13.0"
 gem "minitest", "~> 5.16"
 
 # Rails/PostgreSQL are only loaded by the explicit Acp::Rails integration.
-gem "pg", "~> 1.5"
-gem "rails", ">= 8.0", "< 9.0"
+gem "async", *ENV.fetch("ACP_ASYNC_CONSTRAINT", ">= 2.35, < 2.38").split(",").map(&:strip)
+gem "pg", *ENV.fetch("ACP_PG_CONSTRAINT", "~> 1.5").split(",").map(&:strip)
+gem "rails", *ENV.fetch("ACP_RAILS_CONSTRAINT", ">= 8.0, < 9.0").split(",").map(&:strip)
 
 gem "rubocop", "~> 1.21"
 gem "rubocop-minitest"

@@ -140,6 +140,10 @@ class TestRuntime < Minitest::Test
     assert_operator runtime.metrics[:max_active_fetches], :<=, 2
     assert_operator runtime.metrics[:max_active_ingests], :<=, 2
     assert_operator runtime.metrics[:max_queued_batches], :<=, 3
+    assert_operator runtime.metrics[:completed_cycles], :>, 0
+    assert_operator runtime.metrics[:polling_lag_p50], :<=, 300
+    assert_operator runtime.metrics[:polling_lag_p95], :<=, 300
+    assert_operator runtime.metrics[:polling_lag_p99], :<=, 300
     assert_equal 0, runtime.metrics[:active_cycles]
     assert_equal 0, runtime.metrics[:active_fetches]
   end

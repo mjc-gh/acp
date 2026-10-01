@@ -17,6 +17,9 @@ jobs:
     strategy:
       matrix:
         ruby:
+          - '3.2'
+          - '3.3'
+          - '3.4'
           - '4.0.6'
 
     steps:
@@ -30,6 +33,36 @@ jobs:
           bundler-cache: true
       - name: Run the default task
         run: bundle exec rake
+      - name: Verify gem contents and executable installation
+        run: bundle exec rake package:verify
+
+  compatibility:
+    runs-on: ubuntu-latest
+    name: Ruby ${{ matrix.ruby }} / Rails ${{ matrix.rails }} / Async ${{ matrix.async }} / pg ${{ matrix.pg }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ['3.2', '4.0.6']
+        rails: ['~> 8.0.0', '~> 8.1.0']
+        async: ['~> 2.35.0', '~> 2.37.0']
+        pg: ['~> 1.5.0', '~> 1.6.0']
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Resolve compatibility combination
+        env:
+          ACP_RAILS_CONSTRAINT: ${{ matrix.rails }}
+          ACP_ASYNC_CONSTRAINT: ${{ matrix.async }}
+          ACP_PG_CONSTRAINT: ${{ matrix.pg }}
+        run: bundle update rails async pg
+      - name: Run unit tests and lint
+        run: bundle exec rake test rubocop
 
   postgres-integration:
     runs-on: ubuntu-latest

@@ -45,6 +45,7 @@ module Acp
   class Runtime
     State = Struct.new(:tenant_id, :due, :sequence, :in_flight, :enabled, keyword_init: true)
     IngestMessage = Struct.new(:tenant_id, :batch, :context, :reply, :queued_at, keyword_init: true)
+    POLLING_LAG_BUCKETS = [0.0, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 300].freeze
 
     def initialize(configuration:, progress:, ownership: LocalOwnership.new,
                    clock: MonotonicClock.new, on_error: nil, random: Random,
@@ -72,11 +73,18 @@ module Acp
         ingestion_duration: 0.0,
         cursor_update_delay: 0.0,
         retry_count: 0,
+        completed_cycles: 0,
+        ownership_acquisitions: 0,
+        ownership_skips: 0,
         polling_lag: 0.0,
+        polling_lag_p50: 0.0,
+        polling_lag_p95: 0.0,
+        polling_lag_p99: 0.0,
         renewal_deadline_misses: 0,
         discovery_successes: 0,
         discovery_failures: 0
       }
+      @polling_lag_histogram = Array.new(POLLING_LAG_BUCKETS.length, 0)
       @running = false
       @shutdown_requested = false
       @paused_tenants = {}
@@ -357,7 +365,11 @@ module Acp
     def run_cycle(tenant_id)
       started_at = @clock.now
       ownership_token = @ownership.acquire(tenant_id)
-      return @clock.now + @configuration.interval unless ownership_token
+      unless ownership_token
+        @metrics[:ownership_skips] += 1
+        return @clock.now + @configuration.interval
+      end
+      @metrics[:ownership_acquisitions] += 1
 
       lease_state = { lost: false }
       heartbeat = start_lease_heartbeat(tenant_id, ownership_token, lease_state)
@@ -380,6 +392,7 @@ module Acp
       acknowledge(tenant_id, poll_id, batch.next_cursor, progress_state.revision, ownership_token)
       @metrics[:cursor_update_delay] = @clock.now - cursor_update_started
       @metrics[:polling_lag] = [@clock.now - (started_at + @configuration.interval), 0].max
+      record_cycle_success(@metrics[:polling_lag])
       emit(:poll_completed, tenant_id: tenant_id, poll_id: poll_id, stage: :scheduling,
                             duration: @clock.now - started_at)
       [started_at + @configuration.interval, @clock.now].max
@@ -672,6 +685,21 @@ module Acp
     def record_queued_batch
       @metrics[:queued_batches] += 1
       @metrics[:max_queued_batches] = [@metrics[:max_queued_batches], @metrics[:queued_batches]].max
+    end
+
+    def record_cycle_success(lag)
+      @metrics[:completed_cycles] += 1
+      bucket = POLLING_LAG_BUCKETS.index { |boundary| lag <= boundary } || POLLING_LAG_BUCKETS.length - 1
+      @polling_lag_histogram[bucket] += 1
+      [50, 95, 99].each do |percentile|
+        target = (@metrics[:completed_cycles] * percentile / 100.0).ceil
+        cumulative = 0
+        index = @polling_lag_histogram.index do |count|
+          cumulative += count
+          cumulative >= target
+        end
+        @metrics["polling_lag_p#{percentile}".to_sym] = POLLING_LAG_BUCKETS.fetch(index)
+      end
     end
 
     def drain_ingest_queue(queue)
