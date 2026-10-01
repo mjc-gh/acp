@@ -30,3 +30,33 @@ jobs:
           bundler-cache: true
       - name: Run the default task
         run: bundle exec rake
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: acp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d acp_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ACP_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/acp_test
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0.6'
+          bundler-cache: true
+      - name: Run PostgreSQL integration tests
+        run: bundle exec rake test:postgres

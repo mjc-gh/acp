@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "open3"
+require "rbconfig"
 
 class TestAcp < Minitest::Test
   class ValidProgram < Acp::Program
@@ -110,7 +112,17 @@ class TestAcp < Minitest::Test
   end
 
   def test_core_load_does_not_load_rails
-    refute($LOADED_FEATURES.any? { |path| path.match?(%r{/(?:active_record|rails)(?:/|\.rb)}) })
+    library = File.expand_path("../lib", __dir__)
+    script = <<~'RUBY'
+      require "acp"
+      rails_loaded = $LOADED_FEATURES.any? do |path|
+        path.match?(%r{/(?:active_record|rails)(?:/|\.rb)})
+      end
+      abort if rails_loaded
+    RUBY
+    _stdout, _stderr, status = Open3.capture3(RbConfig.ruby, "-I#{library}", "-e", script)
+
+    assert status.success?, "requiring acp loaded Rails or Active Record"
   end
 end
 

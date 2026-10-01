@@ -1,0 +1,5 @@
+test:
+  adapter: postgresql
+  url: <%= ENV.fetch("ACP_TEST_DATABASE_URL", "postgres://localhost/acp_test") %>
+  pool: <%= ENV.fetch("ACP_TEST_POOL", "10") %>
+  checkout_timeout: 2

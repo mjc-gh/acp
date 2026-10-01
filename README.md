@@ -61,11 +61,80 @@ increment `attempt` for the stage being retried.
 ingestion and progress acknowledgement. Thus effective fetch concurrency is
 `min(fetch_concurrency, pipeline_capacity)`. The ingestion callback must not
 share unsafe mutable state with other cycles. The consumer owns connection-pool
-selection, client lifecycles, transactions, and making ingestion safe to replay.
-Rails integration is explicit and belongs to the application.
-Keep database work inside the consumer's discovery, cursor-initialization,
-resolution, and ingestion callbacks; return detached resolved values before
-network waits, and acquire database connections only for database work.
+selection, client lifecycles, and making ingestion safe to replay. Rails
+integration is explicit and belongs to the application. Keep database work
+inside the consumer's discovery, cursor-initialization, resolution, and ingestion
+callbacks; return detached resolved values before network waits, and acquire
+database connections only for database work.
+
+## Rails 8 and PostgreSQL
+
+The optional Rails integration targets Rails 8.x, Ruby >= 3.2, and `pg` >= 1.5,
+< 2. The locked integration stack is Rails 8.1.4 with `pg` 1.6.3. Before Rails
+initializes, configure fiber-isolated execution state in
+`config/application.rb`:
+
+```ruby
+config.active_support.isolation_level = :fiber
+```
+
+Then explicitly build the runtime configuration with its transaction-owning
+model or pool:
+
+```ruby
+require "acp/rails"
+
+configuration = Acp::Rails.configuration_for(
+  TenantSync,
+  transaction_owner: ApplicationRecord
+)
+runtime = Acp::Runtime.new(configuration: configuration, progress: progress_store)
+```
+
+`configuration_for` validates Rails 8 and fiber isolation; it does not change
+execution isolation after the application has started. Discovery,
+cursor-initialization, and resolution callbacks run inside the Rails executor
+with a connection checked out only for the callback. Fetch runs inside the
+executor without a database connection, so resolution must return detached
+values. Ingestion runs inside the executor and one transaction on the selected
+pool. Only a confirmed commit allows progress acknowledgement. An explicit
+`ActiveRecord::Rollback`, an ambient transaction, or a commit exception cannot
+be acknowledged as success.
+
+The selected pool must have at least
+`pipeline_capacity + min(ingest_concurrency, pipeline_capacity)` connections for
+the runtime's simultaneous resolution and ingestion work. Add headroom for web
+requests, jobs, and other users of that same pool. Discovery runs before polling
+begins. A consumer must write destination rows through the selected pool; writes
+to another database and transaction work spawned in consumer-created threads
+are outside the atomic batch guarantee. The gem creates neither destination nor
+progress tables.
+
+Rails ingestion retries selected deadlock, serialization, lock-timeout, and
+connection failures up to three times by default, with the same materialized
+batch and poll ID. A connection failure during COMMIT can leave the outcome
+unknown, so connection failures are replayed only through this same idempotent
+ingestion contract. Keep event writes protected by unique constraints and make
+mutable updates version-aware. Exhausted or unclassified failures do not advance
+progress; a later cycle can replay the batch. A commit already confirmed before
+a progress-store failure is never rerun in that cycle.
+
+The supported stack is verified for ordinary PostgreSQL I/O under Async with
+the Rails pool and adapter in `bundle exec rake test:postgres`. The `pg` driver
+cooperates with Ruby's fiber scheduler for ordinary socket waits, but CPU-heavy
+transformations and blocking native calls inside callbacks can still stall the
+reactor. Validate the full Rails/pool/adapter stack when changing versions or
+customizing adapters.
+
+Run the PostgreSQL integration task locally with a PostgreSQL database available:
+
+```sh
+ACP_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/acp_test \
+  bundle exec rake test:postgres
+```
+
+The integration task creates and drops only its own consumer-owned test tables.
+CI runs it against PostgreSQL 17 in a separate job.
 
 ## Batches, cursors, and retries
 

@@ -6,3 +6,5 @@
 /pkg/
 /spec/reports/
 /tmp/
+/test/rails_app/log/
+/test/rails_app/tmp/
