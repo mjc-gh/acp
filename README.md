@@ -93,6 +93,43 @@ jitter. Cancellation and process-level exceptions are never retryable. The
 program contract describes policies; a runtime is responsible for enforcing the
 elapsed deadline and applying the returned delay.
 
+## Local runtime
+
+Run a validated program inside an Async task and provide a progress adapter:
+
+```ruby
+progress = MyProgressStore.new
+runtime = Acp::Runtime.new(configuration: TenantSync.configuration, progress: progress)
+
+Async { runtime.run }
+```
+
+The adapter implements `read(tenant_id)`, `initialize_cursor(tenant_id, cursor)`,
+and `acknowledge(tenant_id, poll_id, cursor)`. Initialization must be
+idempotent and return the stored cursor. Acknowledgement must be idempotent by
+`poll_id`; it is retried independently after ingestion returns, which represents
+a confirmed consumer commit. Runtime cancellation propagates through callback,
+retry, queue, and worker waits. Stop the surrounding Async task to shut the
+runtime down.
+
+An optional ownership adapter implements `acquire(tenant_id)` and
+`release(tenant_id, token)`. A false/nil acquisition skips that cycle and tries
+again after one interval. The default `Acp::LocalOwnership` claims every tenant.
+An optional `on_error` callable receives `(tenant_id, error, stage)` for
+recoverable tenant and acknowledgement failures. Tests and embedded runtimes can
+inject a clock implementing `now`, `sleep(duration)`, and `wait(duration) { ... }`;
+the default clock uses monotonic process time and Async-aware waits.
+
+The scheduler staggers first due times deterministically per program and tenant,
+uses a fair due-time heap, and creates no per-tenant waiting tasks. Pipeline
+capacity includes active fetches, completed batches queued for ingestion, and
+cycles awaiting progress acknowledgement. Fetch concurrency is separately
+bounded by `min(fetch_concurrency, pipeline_capacity)`; ingestion uses a fixed
+worker group bounded by both ingest concurrency and pipeline capacity. Successful
+cycles become due at `max(cycle_start + interval, acknowledgement_time)`. A
+failed cycle is isolated and rescheduled after one interval; stage retries retain
+their cursor, poll ID, resolved context, or batch as appropriate.
+
 See [`examples/tenant_sync.rb`](examples/tenant_sync.rb) for a load-safe consumer
 definition. Requiring it does not run discovery or open connections.
 
