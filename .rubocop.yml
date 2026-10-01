@@ -1,5 +1,10 @@
 AllCops:
   TargetRubyVersion: 3.2
+  NewCops: disable
+
+plugins:
+  - rubocop-minitest
+  - rubocop-rake
 
 Style/StringLiterals:
   EnforcedStyle: double_quotes
