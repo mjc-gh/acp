@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "base64"
+require "digest/sha1"
 require "json"
 require "securerandom"
 require "redis"
@@ -429,10 +430,31 @@ module Acp
     end
 
     def worker_statuses
-      encoded_ids = with_client { |redis| redis.zrange(key("workers"), 0, @worker_scan_limit - 1) }
-      encoded_ids.to_h do |encoded_id|
-        status = with_client { |redis| redis.hgetall(key("worker:#{encoded_id}")) }
-        [decode_worker_id(encoded_id), status.transform_values(&:to_i).freeze]
+      live_worker_records.to_h do |encoded_id, status|
+        [decode_worker_id(encoded_id), status]
+      end.freeze
+    end
+
+    # Return each live worker's health and the number of tenant IDs the
+    # capacity-weighted assignment hash maps to it.
+    def worker_assignments(tenant_ids)
+      workers = live_worker_records
+      assignments = workers.to_h do |encoded_id, status|
+        [encoded_id, status.merge("assigned_tenants" => 0)]
+      end
+      return {}.freeze if workers.empty?
+
+      tenant_ids.each do |tenant_id|
+        identity = canonical_tenant_id(tenant_id)
+        owner = workers.max_by do |encoded_id, status|
+          sample = Digest::SHA1.hexdigest("#{identity}|#{encoded_id}")[0, 13].to_i(16).fdiv(2**52)
+          sample * status.fetch("capacity", 1)
+        end
+        assignments.fetch(owner.first)["assigned_tenants"] += 1
+      end
+
+      assignments.to_h do |encoded_id, status|
+        [decode_worker_id(encoded_id), status.freeze]
       end.freeze
     end
 
@@ -468,6 +490,18 @@ module Acp
 
     def worker_key
       key("worker:#{encoded_worker_id}")
+    end
+
+    def live_worker_records
+      with_client do |redis|
+        seconds, microseconds = redis.time
+        now_ms = seconds.to_i * 1_000 + microseconds.to_i / 1_000
+        redis.zremrangebyscore(key("workers"), "-inf", now_ms)
+        redis.zrange(key("workers"), 0, @worker_scan_limit - 1).map do |encoded_id|
+          status = redis.hgetall(key("worker:#{encoded_id}")).transform_values(&:to_i)
+          [encoded_id, status.freeze]
+        end
+      end
     end
 
     def tenant_key(identity)

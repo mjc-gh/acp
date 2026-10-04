@@ -229,6 +229,10 @@ cycles reach safe boundaries. Each in-flight lease renews at one-third of its
 configured duration using Redis server time. A worker that cannot confirm renewal
 stops starting work for that cycle.
 
+For monitoring, `worker_statuses` returns current live worker heartbeats, and
+`worker_assignments(tenant_ids)` reports each live worker's status and the number
+of supplied tenant IDs assigned to it by the same capacity-weighted hash.
+
 Cursor state has no lease TTL. Initialization records a permanent marker so an
 unexpectedly missing progress hash raises `Acp::MissingProgressError` rather than
 silently resetting a previously known tenant. Advancement checks the lease token,
