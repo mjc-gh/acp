@@ -233,7 +233,22 @@ class TestRailsIntegration < Minitest::Test
         application: build_application
       )
     end
-    assert_match(/pool size 1 is below the required 2/, error.message)
+    assert_match(/pool size 1 is below the required 3/, error.message)
+  end
+
+  def test_large_http_pipeline_can_use_a_small_database_pool
+    program = build_program
+    program.fetch_concurrency 2_500
+    program.pipeline_capacity 2_500
+    program.resolve_concurrency 2
+    program.ingest_concurrency 4
+
+    config = Acp::Rails.configuration_for(
+      program, transaction_owner: FakePool.new(size: 7), application: build_application
+    )
+
+    assert_equal 2_500, config.effective_fetch_concurrency
+    assert_equal 2, config.effective_resolve_concurrency
   end
 end
 # rubocop:enable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize

@@ -4,6 +4,7 @@ require "async"
 require "async/limited_queue"
 require "async/queue"
 require "async/semaphore"
+require "async/notification"
 require "digest"
 
 module Acp
@@ -43,8 +44,9 @@ module Acp
   # rubocop:disable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize
   # rubocop:disable Metrics/ParameterLists, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/BlockLength
   class Runtime
-    State = Struct.new(:tenant_id, :due, :sequence, :in_flight, :enabled, keyword_init: true)
-    IngestMessage = Struct.new(:tenant_id, :batch, :context, :reply, :queued_at, keyword_init: true)
+    State = Struct.new(:tenant_id, :due, :sequence, :in_flight, :enabled, :scheduled, keyword_init: true)
+    IngestMessage = Struct.new(:tenant_id, :batch, :context, :reply, :queued_at,
+                               :task, :queued, :cancelled, :committed, :token, :lease_state, keyword_init: true)
     POLLING_LAG_BUCKETS = [0.0, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 300].freeze
 
     def initialize(configuration:, progress:, ownership: LocalOwnership.new,
@@ -68,6 +70,7 @@ module Acp
         active_ingests: 0,
         max_active_ingests: 0,
         assigned_tenants: 0,
+        discovered_tenants: 0,
         pipeline_utilization: 0.0,
         queue_wait: 0.0,
         ingestion_duration: 0.0,
@@ -132,7 +135,7 @@ module Acp
       @running = true
       running = true
       task = Async::Task.current
-      queue = Async::LimitedQueue.new(@configuration.pipeline_capacity)
+      queue = IngestQueue.new(@configuration.pipeline_capacity)
       @ingest_queue = queue
       events = Async::LimitedQueue.new(@configuration.pipeline_capacity)
       @events = events
@@ -149,8 +152,14 @@ module Acp
       if @ownership.respond_to?(:heartbeat_worker)
         @ownership.heartbeat_worker(capacity: @configuration.pipeline_capacity, active: 0)
       end
+      @metrics[:discovered_tenants] = states.length
+      if @ownership.respond_to?(:scheduling_tenants)
+        assigned = scheduling_tenants.to_h { |id| [id, true] }
+        states.select! { |state| assigned.key?(state.tenant_id) }
+      end
       worker_heartbeat = start_worker_heartbeat
       discovery_task = start_discovery(events)
+      assignment_task = start_assignment_refresh(events)
       heap = DueHeap.new
       states.each { |state| heap.push(state) }
       @states = states.to_h { |state| [state.tenant_id, state] }
@@ -163,7 +172,13 @@ module Acp
               !heap.empty? && heap.peek.due <= @clock.now
           cycle_state = heap.pop
           if cycle_state.in_flight || !cycle_state.enabled ||
-             !@states[cycle_state.tenant_id].equal?(cycle_state) || paused?(cycle_state.tenant_id)
+             !@states[cycle_state.tenant_id].equal?(cycle_state)
+            next
+          end
+
+          if paused?(cycle_state.tenant_id)
+            cycle_state.due = @clock.now + [@configuration.interval, @configuration.discovery_interval].min
+            heap.push(cycle_state)
             next
           end
 
@@ -172,21 +187,21 @@ module Acp
           @metrics[:active_cycles] += 1
           @metrics[:max_active_cycles] = [@metrics[:max_active_cycles], @metrics[:active_cycles]].max
           @metrics[:pipeline_utilization] = @metrics[:active_cycles].fdiv(@configuration.pipeline_capacity)
-          cycle_task = task.async do
-            due = @clock.now + @configuration.interval
+          cycle_task = task.async(cycle_state) do |_cycle_task, state; next_due|
+            next_due = @clock.now + @configuration.interval
             begin
-              due = run_cycle(cycle_state.tenant_id)
+              next_due = run_cycle(state.tenant_id)
             ensure
               @metrics[:active_cycles] -= 1
               begin
-                events.push([:cycle, cycle_state, due])
+                events.push([:cycle, state, next_due])
               rescue Async::Queue::ClosedError
                 nil
               end
-              @cycle_tasks.delete(cycle_state.tenant_id)
+              @cycle_tasks.delete(state.tenant_id)
             end
           end
-          @cycle_tasks[cycle_state.tenant_id] = cycle_task
+          @cycle_tasks[cycle_state.tenant_id] = cycle_task unless cycle_task.finished?
         end
 
         break if @shutdown_requested && active.zero?
@@ -230,6 +245,7 @@ module Acp
         else
           resumed_state = @states[event.last]
           if resumed_state&.enabled && !resumed_state.in_flight
+            heap.delete(resumed_state)
             resumed_state.due = @clock.now
             resumed_state.sequence = sequence
             sequence += 1
@@ -240,7 +256,11 @@ module Acp
     ensure
       if running
         discovery_task&.stop
+        assignment_task&.stop
         worker_heartbeat&.stop
+        events&.close
+        @cycle_tasks&.each_value(&:stop)
+        @ingestion_tasks&.each(&:stop)
         queue&.close
         drain_ingest_queue(queue) if queue
         @running = false
@@ -286,12 +306,41 @@ module Acp
                        end
           next unless discovered
 
-          events.push([:discovery, discovered.map(&:tenant_id)])
+          tenant_ids = if @ownership.respond_to?(:scheduling_tenants)
+                         scheduling_tenants
+                       else
+                         discovered.map(&:tenant_id)
+                       end
+          events.push([:discovery, tenant_ids])
         rescue StandardError => e
           report_error(nil, e, :discovery)
           @clock.sleep([@configuration.discovery_interval, 1].min)
         end
       end
+    end
+
+    def start_assignment_refresh(events)
+      return unless @ownership.respond_to?(:scheduling_tenants)
+
+      interval = [@configuration.discovery_interval, @ownership.renewal_interval(nil)].min
+      Async::Task.current.async do
+        loop do
+          @clock.sleep(interval)
+          break if @shutdown_requested
+
+          events.push([:discovery, scheduling_tenants])
+        rescue StandardError => e
+          report_error(nil, e, :assignment)
+        end
+      end
+    end
+
+    def scheduling_tenants
+      ids = @ownership.scheduling_tenants
+      if @ownership.respond_to?(:discovered_tenant_count)
+        @metrics[:discovered_tenants] = @ownership.discovered_tenant_count
+      end
+      ids
     end
 
     def perform_discovery(initial: false)
@@ -334,6 +383,8 @@ module Acp
         if state
           unless state.enabled
             state.enabled = true
+            next if state.scheduled || state.in_flight
+
             state.due = @clock.now
             state.sequence = sequence
             heap.push(state) unless state.in_flight
@@ -351,6 +402,7 @@ module Acp
 
     def paused?(tenant_id)
       return true if @paused_tenants.key?(tenant_id)
+      return false if @ownership.respond_to?(:scheduling_tenants)
       return false unless @ownership.respond_to?(:tenant_paused?)
 
       @ownership.tenant_paused?(tenant_id)
@@ -378,7 +430,7 @@ module Acp
       poll_id = Context.new_poll_id
       @cycle_poll_ids[tenant_id] = poll_id
       emit(:poll_started, tenant_id: tenant_id, poll_id: poll_id, stage: :scheduling)
-      tenant = @configuration.callback(:resolve).call(tenant_id)
+      tenant = resolve_stage { @configuration.callback(:resolve).call(tenant_id) }
       ensure_ownership!(tenant_id, ownership_token, lease_state)
       batch = retry_stage(@configuration.fetch_retry, :fetch, tenant_id) do |attempt|
         context = FetchContext.new(tenant_id: tenant_id, cursor: cursor, poll_id: poll_id, attempt: attempt)
@@ -386,7 +438,7 @@ module Acp
       end
       batch.validate_after!(cursor)
       ensure_ownership!(tenant_id, ownership_token, lease_state)
-      ingest(batch, tenant_id, cursor, poll_id)
+      ingest(batch, tenant_id, cursor, poll_id, ownership_token, lease_state)
       ensure_ownership!(tenant_id, ownership_token, lease_state)
       cursor_update_started = @clock.now
       acknowledge(tenant_id, poll_id, batch.next_cursor, progress_state.revision, ownership_token)
@@ -415,7 +467,7 @@ module Acp
         state = @progress.read_state(tenant_id)
         return state if state
 
-        initial = Timestamp.normalize(@configuration.callback(:initial_cursor).call(tenant_id))
+        initial = Timestamp.normalize(resolve_stage { @configuration.callback(:initial_cursor).call(tenant_id) })
         initialized = @progress.initialize_state(tenant_id, initial)
         raise Acp::RuntimeError, "progress initialization returned no cursor" if initialized.nil?
 
@@ -425,7 +477,7 @@ module Acp
       cursor = @progress.read(tenant_id)
       return ProgressSnapshot.new(cursor: Timestamp.normalize(cursor), revision: nil) unless cursor.nil?
 
-      initial = Timestamp.normalize(@configuration.callback(:initial_cursor).call(tenant_id))
+      initial = Timestamp.normalize(resolve_stage { @configuration.callback(:initial_cursor).call(tenant_id) })
       initialized = @progress.initialize_cursor(tenant_id, initial)
       raise Acp::RuntimeError, "progress initialization returned no cursor" if initialized.nil?
 
@@ -454,14 +506,21 @@ module Acp
       end
     end
 
-    def ingest(batch, tenant_id, cursor, poll_id)
+    def resolve_stage(&block)
+      @resolve_semaphore ||= Async::Semaphore.new(@configuration.effective_resolve_concurrency)
+      @resolve_semaphore.acquire(&block)
+    end
+
+    def ingest(batch, tenant_id, cursor, poll_id, token, lease_state)
       attempt = 1
       started_at = @clock.now
+      policy = @configuration.ingest_retry
+      message = nil
       loop do
         reply = Async::Queue.new
         context = IngestContext.new(tenant_id: tenant_id, cursor: cursor, poll_id: poll_id, attempt: attempt)
         message = IngestMessage.new(tenant_id: tenant_id, batch: batch, context: context, reply: reply,
-                                    queued_at: @clock.now)
+                                    queued_at: @clock.now, queued: true, token: token, lease_state: lease_state)
         record_queued_batch
         begin
           @ingest_queue.push(message)
@@ -469,47 +528,85 @@ module Acp
           @metrics[:queued_batches] -= 1
           raise
         end
-        error = reply.pop
+        error = begin
+          within_retry_budget(policy, started_at) { reply.pop }
+        rescue StageTimeoutError => e
+          cancel_ingestion(message)
+          message.committed ? nil : e
+        end
         return if error.nil?
         raise error if fatal_error?(error)
 
         elapsed = @clock.now - started_at
-        policy = @configuration.ingest_retry
         raise error unless policy.retryable?(error, attempt: attempt, elapsed: elapsed)
 
         @metrics[:retry_count] += 1
         emit(:retry_scheduled, tenant_id: tenant_id, poll_id: poll_id, stage: :ingest,
                                attempt: attempt, error: classify_error(:ingestion, error))
-        @clock.sleep(policy.delay(attempt: attempt, random: @random))
+        retry_sleep(policy, started_at, attempt, error)
         attempt += 1
       end
+    ensure
+      cancel_ingestion(message) if message
     end
 
     def ingestion_worker(queue)
       while (message = queue.pop)
+        message.queued = false
         @metrics[:queued_batches] -= 1
-        @metrics[:active_ingests] += 1
-        @metrics[:max_active_ingests] = [@metrics[:max_active_ingests], @metrics[:active_ingests]].max
-        @metrics[:queue_wait] = @clock.now - message.queued_at
-        started_at = @clock.now
-        emit(:ingestion_started, tenant_id: message.tenant_id, poll_id: message.context.poll_id,
-                                 stage: :ingest, attempt: message.context.attempt)
-        begin
-          @configuration.callback(:ingest).call(message.batch, message.context)
-          @metrics[:ingestion_duration] = @clock.now - started_at
-          emit(:ingestion_completed, tenant_id: message.tenant_id, poll_id: message.context.poll_id,
-                                     stage: :ingest, attempt: message.context.attempt,
-                                     duration: @metrics[:ingestion_duration])
-          message.reply.push(nil)
-        rescue StandardError => e
-          raise if fatal_error?(e)
-
-          @metrics[:ingestion_duration] = @clock.now - started_at
-          report_error(message.tenant_id, e, :ingestion, attempt: message.context.attempt)
-          message.reply.push(e)
-        ensure
-          @metrics[:active_ingests] -= 1
+        message.task = Async::Task.new(Async::Task.current) do
+          perform_ingestion(message)
         end
+        message.task.run
+        message.reply.push(message.task.wait)
+      end
+    end
+
+    def perform_ingestion(message)
+      active = false
+      raise CancellationError, "ingestion was cancelled" if message.cancelled
+
+      ensure_ownership!(message.tenant_id, message.token, message.lease_state)
+      @metrics[:active_ingests] += 1
+      active = true
+      @metrics[:max_active_ingests] = [@metrics[:max_active_ingests], @metrics[:active_ingests]].max
+      @metrics[:queue_wait] = @clock.now - message.queued_at
+      started_at = @clock.now
+      emit(
+        :ingestion_started,
+        tenant_id: message.tenant_id, poll_id: message.context.poll_id,
+        stage: :ingest, attempt: message.context.attempt
+      )
+      @configuration.callback(:ingest).call(message.batch, message.context)
+      message.committed = true
+      @metrics[:ingestion_duration] = @clock.now - started_at
+      emit(
+        :ingestion_completed,
+        tenant_id: message.tenant_id, poll_id: message.context.poll_id,
+        stage: :ingest, attempt: message.context.attempt,
+        duration: @metrics[:ingestion_duration]
+      )
+      nil
+    rescue StandardError => e
+      report_error(message.tenant_id, e, :ingestion, attempt: message.context.attempt)
+      e
+    ensure
+      if active
+        @metrics[:ingestion_duration] = @clock.now - started_at
+        @metrics[:active_ingests] -= 1
+      end
+    end
+
+    def cancel_ingestion(message)
+      Async::Task.current.defer_stop do
+        message.cancelled = true
+        if message.queued && @ingest_queue.delete(message)
+          message.queued = false
+          @metrics[:queued_batches] -= 1
+        end
+        message.task&.stop
+        message.task&.wait
+        message.batch = nil
       end
     end
 
@@ -548,7 +645,7 @@ module Acp
       attempt = 1
       started_at = @clock.now
       loop do
-        return yield(attempt)
+        return within_retry_budget(policy, started_at) { yield(attempt) }
       rescue StandardError => e
         raise if fatal_error?(e)
 
@@ -559,9 +656,28 @@ module Acp
         emit(:retry_scheduled, tenant_id: tenant_id, poll_id: @cycle_poll_ids[tenant_id], stage: stage,
                                attempt: attempt, error: classify_error(stage, e))
         report_error(tenant_id, e, stage, attempt: attempt)
-        @clock.sleep(policy.delay(attempt: attempt, random: @random))
+        retry_sleep(policy, started_at, attempt, e)
         attempt += 1
       end
+    end
+
+    def within_retry_budget(policy, started_at, &block)
+      remaining = policy.max_elapsed && policy.max_elapsed - (@clock.now - started_at)
+      raise StageTimeoutError, "retry deadline exceeded" if remaining && remaining <= 0
+
+      duration = [remaining, policy.timeout].compact.min
+      return yield unless duration
+
+      Async::Task.current.with_timeout(duration, StageTimeoutError, &block)
+    end
+
+    def retry_sleep(policy, started_at, attempt, error)
+      delay = policy.delay(attempt: attempt, random: @random)
+      remaining = policy.max_elapsed && policy.max_elapsed - (@clock.now - started_at)
+      raise error if remaining && remaining <= 0
+
+      @clock.sleep(remaining ? [delay, remaining].min : delay)
+      raise error if policy.max_elapsed && @clock.now - started_at >= policy.max_elapsed
     end
 
     def fatal_error?(error)
@@ -706,6 +822,39 @@ module Acp
       @metrics[:queued_batches] -= 1 while queue.pop(timeout: 0)
     end
 
+    # Reactor-local queue with removal so cancelled batches never outlive their
+    # pipeline reservation. Pipeline admission already bounds all producers.
+    class IngestQueue
+      def initialize(capacity)
+        @capacity = capacity
+        @items = []
+        @ready = Async::Notification.new
+        @closed = false
+      end
+
+      def push(message)
+        raise Async::Queue::ClosedError if @closed
+        raise Acp::RuntimeError, "ingestion queue exceeded pipeline capacity" if @items.length >= @capacity
+
+        @items << message
+        @ready.signal
+      end
+
+      def pop(timeout: nil)
+        @ready.wait while @items.empty? && !@closed && timeout != 0
+        @items.shift
+      end
+
+      def delete(message)
+        @items.delete(message)
+      end
+
+      def close
+        @closed = true
+        @ready.signal
+      end
+    end
+
     # Binary min-heap ordered by due-time and then insertion sequence. A
     # sequence tie-breaker ensures sustained due-time ties are fair.
     class DueHeap
@@ -722,6 +871,9 @@ module Acp
       end
 
       def push(state)
+        return if state.scheduled
+
+        state.scheduled = true
         @items << state
         index = @items.length - 1
         while index.positive?
@@ -735,6 +887,7 @@ module Acp
 
       def pop
         first = @items.first
+        first.scheduled = false
         last = @items.pop
         unless @items.empty?
           @items[0] = last
@@ -752,6 +905,16 @@ module Acp
           end
         end
         first
+      end
+
+      def delete(state)
+        remaining = @items.reject { |item| item.equal?(state) }
+        @items = []
+        state.scheduled = false
+        remaining.each do |item|
+          item.scheduled = false
+          push(item)
+        end
       end
 
       private

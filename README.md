@@ -14,6 +14,7 @@ class TenantSync < Acp::Program
   interval 60
   fetch_concurrency 300
   ingest_concurrency 5
+  resolve_concurrency 5
   pipeline_capacity 100
 
   tenants do |emit|
@@ -67,6 +68,39 @@ inside the consumer's discovery, cursor-initialization, resolution, and ingestio
 callbacks; return detached resolved values before network waits, and acquire
 database connections only for database work.
 
+Fetch callbacks run in Async fibers on one reactor. HTTP socket waits overlap
+when the client cooperates with Ruby's fiber scheduler; a blocking native client
+or CPU-heavy callback can stall requests and lease renewal. `fetch_concurrency`
+limits callbacks, so consumer-created request fanout needs its own limit. The
+real HTTP test uses Ruby's `Net::HTTP` and verifies overlapping socket waits while
+ownership renewals continue. A callback-scoped client should close before returning:
+
+```ruby
+require "net/http"
+require "json"
+
+fetch do |tenant, context|
+  uri = URI.parse(tenant.fetch(:endpoint))
+  parameters = URI.decode_www_form(uri.query || "")
+  parameters << ["since", Acp::Timestamp.dump(context.cursor)]
+  uri.query = URI.encode_www_form(parameters)
+  client = Net::HTTP.new(uri.host, uri.port, nil)
+  client.use_ssl = uri.scheme == "https"
+  client.open_timeout = 5
+  client.read_timeout = 20
+  client.write_timeout = 20
+  response = client.start { |http| http.get(uri.request_uri) }
+  raise IOError, "upstream HTTP #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+  payload = JSON.parse(response.body)
+  Acp::Batch.new(data: payload.fetch("records"), next_cursor: payload.fetch("next_cursor"))
+end
+```
+
+`resolve_concurrency` separately limits cursor initialization and resolution;
+it defaults to `ingest_concurrency` and is capped by pipeline capacity. Large
+HTTP concurrency therefore does not require an equally large database pool.
+
 ## Rails 8 and PostgreSQL
 
 The optional Rails integration targets Rails 8.x, Ruby >= 3.2, and `pg` >= 1.5,
@@ -102,11 +136,12 @@ pool. Only a confirmed commit allows progress acknowledgement. An explicit
 be acknowledged as success.
 
 The selected pool must have at least
-`pipeline_capacity + min(ingest_concurrency, pipeline_capacity)` connections for
-the runtime's simultaneous resolution and ingestion work. Add headroom for web
-requests, jobs, and other users of that same pool. Discovery runs before polling
-begins. A consumer must write destination rows through the selected pool; writes
-to another database and transaction work spawned in consumer-created threads
+`min(resolve_concurrency, pipeline_capacity) + min(ingest_concurrency, pipeline_capacity) + 1`
+connections for simultaneous resolution, ingestion, and periodic discovery.
+Add headroom for web requests, jobs, and other users of that same pool. Initial
+discovery runs before polling begins. A consumer must write destination rows
+through the selected pool; writes to another database and transaction work spawned
+in consumer-created threads
 are outside the atomic batch guarantee. The gem creates neither destination nor
 progress tables.
 
@@ -150,7 +185,7 @@ cursor monotonicity.
 Configure independent retry policies with exception classes and/or predicates:
 
 ```ruby
-fetch_retry on: [Timeout::Error], max_attempts: 4, max_elapsed: 45,
+fetch_retry on: [Timeout::Error], max_attempts: 4, timeout: 20, max_elapsed: 45,
   backoff: 0.5, max_backoff: 8, jitter: 0.2
 
 ingest_retry on: ->(error) { error.is_a?(DatabaseBusy) }, max_attempts: 3,
@@ -160,8 +195,16 @@ ingest_retry on: ->(error) { error.is_a?(DatabaseBusy) }, max_attempts: 3,
 Attempts are one-based and budgets include the original attempt. Backoff doubles
 from `backoff`, is capped by `max_backoff`, and applies symmetric fractional
 jitter. Cancellation and process-level exceptions are never retryable. The
-program contract describes policies; a runtime is responsible for enforcing the
-elapsed deadline and applying the returned delay.
+runtime enforces the total `max_elapsed` deadline across attempts and backoff,
+and optional `timeout` limits each attempt. These are cooperative deadlines:
+callbacks must yield for cancellation to take effect. An unspecified deadline or
+timeout is unlimited; configure client socket timeouts and stage deadlines for
+production requests. An expired stage raises `Acp::StageTimeoutError`, a
+`Timeout::Error` subclass. Ingestion's elapsed budget includes queue waits and
+unwinds active ingestion before releasing its reservation. After a confirmed
+commit, progress acknowledgement is retried independently until success,
+ownership loss, or cancellation; exhausting ingestion retries does not refetch
+an already committed batch in the same cycle.
 
 ## Local runtime
 
@@ -220,9 +263,15 @@ Async { runtime.run }
 Tenant IDs must be strings or integers; their type is encoded into the identity,
 so integer `12` and string `"12"` never collide. Redis keys are versioned and
 scoped by application, environment, and program. The coordinator registers the
-discovered tenant set, assigns tenants among live workers using a capacity-weighted
-consistent hash, and claims them atomically. Claims, worker scans, and discovery
-scans are bounded (the default maximum live workers is 256; configure
+discovered tenant set, assigns tenants among live workers using capacity-weighted
+rendezvous hashing, and claims them atomically. Workers schedule only their
+locally assigned tenant snapshot. Every worker consumes membership, pause, and
+worker-registry changes at `min(discovery_interval, lease_ttl / 3)` intervals,
+even when another worker owns discovery. Membership reads are pipelined in bounded
+chunks and cached by revision; assignments are cached until membership or worker
+capacities change. Atomic claims remain authoritative during convergence.
+Claims, worker scans, and discovery scans are bounded (the default maximum live
+workers is 256; configure
 `worker_scan_limit` for a larger deployment). Worker health is refreshed
 independently; when a worker appears or expires, assignments converge as tenant
 cycles reach safe boundaries. Each in-flight lease renews at one-third of its
@@ -244,10 +293,14 @@ durable progress. Redis leases cannot fence PostgreSQL: an old process can still
 commit a transaction after takeover, so ingestion must be idempotent and safe for
 out-of-order replay.
 
-The client opens a dedicated Redis connection per command. This avoids a blocked
-command monopolizing the connection used for renewal; use a Redis endpoint and
-server connection limit sized for active runtime operations. It uses ordinary
-Redis Ruby sockets, which cooperate with Ruby's fiber scheduler. Use a single
+The coordinator reuses exclusively checked-out Redis connections in two bounded
+reactor-local pools: ordinary commands (`connection_pool_size`, default 16) and
+lease/discovery renewal plus worker heartbeats (`renewal_pool_size`, default 8).
+Blocked ordinary commands cannot exhaust renewal capacity. Failed or cancelled
+connections are discarded. Call `coordinator.close` after the runtime drains;
+`acp-worker` does this automatically. Use one coordinator per worker/reactor and
+budget the sum of both pool limits per worker, plus other Redis clients. It uses
+ordinary Redis Ruby sockets, which cooperate with Ruby's fiber scheduler. Use a single
 writable Redis primary for v1. Redis Cluster is unsupported because the atomic
 scripts touch multiple keys without a cluster hash-tag layout.
 
@@ -304,7 +357,7 @@ bundle exec acp-worker \
 
 Options can also be supplied as `ACP_PROGRAM`, `ACP_TRANSACTION_OWNER`,
 `ACP_APPLICATION`, `ACP_ENVIRONMENT`, `ACP_WORKER_ID`, `ACP_PIPELINE_CAPACITY`,
-`ACP_FETCH_CONCURRENCY`, `ACP_INGEST_CONCURRENCY`, `ACP_LEASE_TTL`,
+`ACP_FETCH_CONCURRENCY`, `ACP_INGEST_CONCURRENCY`, `ACP_RESOLVE_CONCURRENCY`, `ACP_LEASE_TTL`,
 `ACP_DISCOVERY_INTERVAL`, and `ACP_DRAIN_TIMEOUT`; `REDIS_URL` configures Redis.
 `ACP_NAMESPACE` aliases the application component of the Redis namespace.
 By default, the worker ID combines `HOSTNAME` and the process ID; set
@@ -333,7 +386,8 @@ With Rails loaded, lifecycle events are published as `*.acp`
 stage, attempt, duration, and classified error type, but omit credentials,
 exception messages, and batch bodies. Use tenant IDs for event-level diagnostics;
 aggregate metrics from `runtime.metrics` without tenant labels. The metrics
-snapshot includes assigned tenants, active fetches/cycles/ingests, queue wait,
+snapshot includes assigned and discovered tenant counts (including tenants
+assigned to other workers), active fetches/cycles/ingests, queue wait,
 ingestion duration, cursor-update delay, retries, polling lag, discovery health,
 lease acquisition/skips, completed cycles, and lease renewal misses. Polling lag
 p50/p95/p99 values come from a fixed-size histogram and are reported as bucket
@@ -342,11 +396,10 @@ upper bounds, so metrics memory does not grow with runtime duration.
 Redis `worker_statuses` reports live worker capacity and activity.
 
 Size the Rails pool for at least
-`pipeline_capacity + min(ingest_concurrency, pipeline_capacity)` plus web/job
-headroom; startup enforces that minimum. Redis opens a dedicated connection per
-command to keep lease renewal independent of blocked commands. Budget Redis
-connections for each worker's active cycles, heartbeat, discovery and progress
-operations, plus other application clients. Scale replica count and pipeline
+`min(resolve_concurrency, pipeline_capacity) + min(ingest_concurrency, pipeline_capacity) + 1`
+plus web/job headroom; startup enforces that minimum. Redis reserves a separate
+connection pool for renewals and heartbeats. Budget Redis connections from both
+pool limits plus other application clients. Scale replica count and pipeline
 capacity within those limits. Acp leaves process supervision and replica scaling
 to the deployment environment.
 
@@ -401,9 +454,12 @@ docker compose down
 ```
 
 Its nominal defaults use a seeded uniform 1–19 second fetch latency (10 seconds
-average), 2,500 fetch/pipeline slots per worker, and 16 ingestion slots. Two
-workers therefore expose the plan's approximate 5,000 concurrent-request budget;
-the one-worker run is the redistribution comparison. These are benchmark inputs,
+average), 2,500 fetch/pipeline slots per worker, and 16 ingestion slots. Each
+worker defaults to 16 resolution slots and a configured pool size of 37,
+including discovery and headroom. `ACP_BENCH_RESOLVE_CONCURRENCY` controls the
+resolution budget. Two workers therefore expose the plan's approximate 5,000
+concurrent-request budget; the one-worker run is the redistribution comparison.
+These are benchmark inputs,
 not recommended production settings. Set the `ACP_BENCH_*` values to match the
 target API's latency tails, payload distribution, database pool budget, and Redis
 connection limit before treating the result as release evidence.

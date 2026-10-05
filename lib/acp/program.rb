@@ -4,7 +4,7 @@ module Acp
   # Class-level DSL for declaring one tenant polling program.
   class Program
     SETTING_NAMES = %i[interval fetch_concurrency ingest_concurrency pipeline_capacity discovery_interval
-                       retry_cooldown].freeze
+                       retry_cooldown resolve_concurrency].freeze
     CALLBACK_NAMES = %i[tenants initial_cursor resolve fetch ingest].freeze
 
     class << self
@@ -34,7 +34,7 @@ module Acp
       end
 
       def program_name(value = :__acp_missing__)
-        return @program_name || name unless value == :__acp_missing__
+        return @program_name || name if value == :__acp_missing__
 
         @program_name = value
       end

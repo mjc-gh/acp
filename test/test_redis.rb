@@ -60,6 +60,58 @@ class TestRedisCoordinator < Minitest::Test
     assert_equal 3, assignments.fetch("worker-b").fetch("active")
   end
 
+  def test_weighted_assignments_are_proportional_to_capacity
+    store = coordinator
+    store.define_singleton_method(:live_worker_records) do
+      [[Base64.urlsafe_encode64("small", padding: false), { "capacity" => 1 }],
+       [Base64.urlsafe_encode64("large", padding: false), { "capacity" => 3 }]]
+    end
+    assignments = store.worker_assignments((1..10_000).to_a)
+
+    assert_in_delta 2_500, assignments.fetch("small").fetch("assigned_tenants"), 150
+  end
+
+  # The simultaneous waits and observed pool bounds form one interleaving.
+  # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+  def test_connection_reuse_is_bounded_and_renewals_have_independent_capacity
+    clients = []
+    factory = lambda do
+      client = Struct.new(:closed) do
+        def close
+          self.closed = true
+        end
+      end.new(false)
+      clients << client
+      client
+    end
+    store = coordinator(connection_factory: factory, connection_pool_size: 2, renewal_pool_size: 1)
+    active = 0
+    maximum = 0
+    renewed = false
+
+    Async do |root|
+      tasks = 6.times.map do
+        root.async do
+          store.send(:with_client) do
+            active += 1
+            maximum = [maximum, active].max
+            Kernel.sleep(0.02)
+            active -= 1
+          end
+        end
+      end
+      store.send(:with_client, lane: :renewal) { renewed = active == 2 }
+      tasks.each(&:wait)
+    end
+    store.close
+
+    assert renewed
+    assert_equal 2, maximum
+    assert_equal 3, clients.length
+    assert(clients.all?(&:closed))
+  end
+  # rubocop:enable Metrics/MethodLength, Metrics/AbcSize
+
   def assert_tenant_coverage(assignments)
     assigned_count = assignments.values.map { |status| status.fetch("assigned_tenants") }.sum
     assert_equal 100, assigned_count
@@ -92,7 +144,17 @@ class TestRedisCoordinator < Minitest::Test
 
     def hgetall(key)
       encoded_id = key.split(":worker:").last
-      @statuses.fetch(encoded_id, {})
+      result = @statuses.fetch(encoded_id, {})
+      @pipeline_results << result if @pipeline_results
+      result
+    end
+
+    def pipelined
+      @pipeline_results = []
+      yield self
+      @pipeline_results
+    ensure
+      @pipeline_results = nil
     end
   end
 end

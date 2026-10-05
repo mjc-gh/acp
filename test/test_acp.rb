@@ -56,6 +56,15 @@ class TestAcp < Minitest::Test
     refute_same ValidProgram.configuration.callbacks, ChildProgram.configuration.callbacks
   end
 
+  def test_explicit_program_names_work_for_anonymous_definitions
+    program = Class.new(ValidProgram)
+    program.program_name "ExplicitSync"
+
+    assert_equal "ExplicitSync", program.program_name
+    assert_equal "ExplicitSync", program.configuration.name
+    assert_equal "ExplicitSync", Class.new(program).configuration.name
+  end
+
   def test_configuration_rejects_missing_callbacks
     error = assert_raises(Acp::ConfigurationError) { IncompleteProgram.configuration }
     assert_match(/missing callbacks/, error.message)

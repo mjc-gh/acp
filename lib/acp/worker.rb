@@ -45,7 +45,11 @@ module Acp
       begin
         run_runtime(runtime)
       ensure
-        call_consumer_shutdown(options)
+        begin
+          call_consumer_shutdown(options)
+        ensure
+          coordinator.close if coordinator.respond_to?(:close)
+        end
       end
       0
     rescue StandardError => e
@@ -66,7 +70,8 @@ module Acp
         "worker-id" => nil,
         "pipeline-capacity" => nil,
         "fetch-concurrency" => nil,
-        "ingest-concurrency" => nil
+        "ingest-concurrency" => nil,
+        "resolve-concurrency" => nil
       )
       options.each_key do |name|
         env_name = "ACP_#{name.tr("-", "_").upcase}"
@@ -112,6 +117,7 @@ module Acp
         interval: base.interval,
         fetch_concurrency: integer_option(options, "fetch-concurrency", base.fetch_concurrency),
         ingest_concurrency: integer_option(options, "ingest-concurrency", base.ingest_concurrency),
+        resolve_concurrency: integer_option(options, "resolve-concurrency", base.resolve_concurrency),
         pipeline_capacity: integer_option(options, "pipeline-capacity", base.pipeline_capacity),
         discovery_interval: Float(options.fetch("discovery-interval")),
         retry_cooldown: base.retry_cooldown
@@ -183,7 +189,7 @@ module Acp
     end
 
     def integer_option(options, name, fallback)
-      options.key?(name) ? Integer(options.fetch(name)) : fallback
+      options[name].nil? ? fallback : Integer(options.fetch(name))
     end
 
     def constantize(name)

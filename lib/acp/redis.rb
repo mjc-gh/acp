@@ -28,12 +28,12 @@ module Acp
       redis.call("ZREMRANGEBYSCORE", KEYS[2], "-inf", now_ms)
       local workers = redis.call("ZRANGE", KEYS[2], 0, tonumber(ARGV[7]) - 1)
       local assigned = nil
-      local best_score = -1
+      local best_score = math.huge
       for _, member in ipairs(workers) do
         local capacity = tonumber(redis.call("HGET", ARGV[6] .. member, "capacity") or "1")
-        local sample = tonumber(string.sub(redis.sha1hex(ARGV[5] .. "|" .. member), 1, 13), 16) / 4503599627370496
-        local score = sample * capacity
-        if score > best_score then
+        local sample = (tonumber(string.sub(redis.sha1hex(ARGV[5] .. "|" .. member), 1, 13), 16) + 1) / 4503599627370497
+        local score = -math.log(sample) / capacity
+        if score < best_score or (score == best_score and (not assigned or member < assigned)) then
           assigned = member
           best_score = score
         end
@@ -123,6 +123,7 @@ module Acp
       if tonumber(redis.call("HGET", KEYS[1], "deadline") or "0") <= now_ms then return "LEASE_LOST" end
       redis.call("ZADD", KEYS[2], 0, ARGV[2])
       redis.call("HSET", KEYS[3], "generation", ARGV[3])
+      redis.call("INCR", KEYS[4])
       return "OK"
     LUA
 
@@ -132,7 +133,18 @@ module Acp
       local now_ms = (now[1] * 1000) + math.floor(now[2] / 1000)
       if tonumber(redis.call("HGET", KEYS[1], "deadline") or "0") <= now_ms then return "LEASE_LOST" end
       redis.call("SET", KEYS[2], ARGV[2])
+      redis.call("INCR", KEYS[3])
       return "OK"
+    LUA
+
+    PAUSE_SCRIPT = <<~LUA
+      if ARGV[1] == "1" then
+        redis.call("HSET", KEYS[1], "paused", "1")
+      else
+        redis.call("HDEL", KEYS[1], "paused")
+      end
+      redis.call("INCR", KEYS[2])
+      return 1
     LUA
 
     ADVANCE_SCRIPT = <<~LUA
@@ -157,13 +169,17 @@ module Acp
 
     def initialize(application:, environment:, program:, redis_url: ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0"),
                    redis_options: {}, connection_factory: nil, worker_id: SecureRandom.uuid,
-                   lease_ttl: 60, claim_scan_limit: 256, worker_scan_limit: 256)
+                   lease_ttl: 60, claim_scan_limit: 256, worker_scan_limit: 256,
+                   connection_pool_size: 16, renewal_pool_size: 8)
       [application, environment, program].each do |part|
         unless part.is_a?(String) && !part.empty?
           raise ConfigurationError, "Redis namespace components must be nonempty strings"
         end
       end
-      raise ConfigurationError, "lease_ttl must be at least 3 seconds" unless lease_ttl.is_a?(Numeric) && lease_ttl >= 3
+      unless lease_ttl.is_a?(Numeric) && lease_ttl.finite? && lease_ttl >= 3
+        raise ConfigurationError, "lease_ttl must be finite and at least 3 seconds"
+      end
+
       unless claim_scan_limit.is_a?(Integer) && claim_scan_limit.positive?
         raise ConfigurationError, "claim_scan_limit must be a positive integer"
       end
@@ -172,6 +188,12 @@ module Acp
       end
       unless worker_id.is_a?(String) && !worker_id.empty?
         raise ConfigurationError, "worker_id must be a nonempty string"
+      end
+
+      [connection_pool_size, renewal_pool_size].each do |size|
+        unless size.is_a?(Integer) && size.positive?
+          raise ConfigurationError, "Redis connection pool sizes must be positive integers"
+        end
       end
 
       namespace = Base64.urlsafe_encode64(JSON.generate([application, environment, program]), padding: false)
@@ -185,9 +207,13 @@ module Acp
       @worker_scan_limit = worker_scan_limit
       @tenant_values = {}
       @claim_offset = 0
+      @discovered_tenant_count = 0
+      @client_pools = { commands: [], renewal: [] }
+      @client_limits = { commands: connection_pool_size, renewal: renewal_pool_size }
+      @client_semaphores = @client_limits.transform_values { |size| Async::Semaphore.new(size) }
     end
 
-    attr_reader :worker_id
+    attr_reader :worker_id, :discovered_tenant_count
 
     def register_tenants(tenant_ids)
       tenant_ids.each_slice(@claim_scan_limit) do |batch|
@@ -203,6 +229,7 @@ module Acp
               pipeline.zadd(key("tenants"), 0, identity)
               pipeline.hset(tenant_key(identity), "generation", generation)
             end
+            pipeline.incr(key("membership:revision"))
           end
         end
       end
@@ -211,6 +238,31 @@ module Acp
 
     def enabled_tenants
       tenant_ids.map { |identity| @tenant_values[identity] || decode_tenant_id(identity) }
+    end
+
+    # Assignment snapshots are advisory; CLAIM_SCRIPT remains authoritative.
+    # Pause state and completed membership are consumed by every worker.
+    def scheduling_tenants
+      workers = live_worker_records
+      return [] if workers.empty?
+
+      records = membership_records
+      signature = [@membership_revision, workers.map { |id, status| [id, status.fetch("capacity", 1)] }.sort]
+      return @scheduled_tenants.dup if @assignment_signature == signature
+
+      scheduled = []
+      records.each_slice(@claim_scan_limit) do |batch|
+        batch.each do |identity, status, completed|
+          next if status.fetch("generation", "0").to_i < completed || status["paused"] == "1"
+          next unless assigned_worker(identity, workers).first == encoded_worker_id
+
+          scheduled << (@tenant_values[identity] || decode_tenant_id(identity))
+        end
+        Async::Task.current?&.yield
+      end
+      @scheduled_tenants = scheduled
+      @assignment_signature = signature
+      @scheduled_tenants.dup
     end
 
     def acquire_discovery
@@ -226,7 +278,7 @@ module Acp
     end
 
     def renew_discovery(token)
-      with_client do |redis|
+      with_client(lane: :renewal) do |redis|
         redis.eval(DISCOVERY_RENEW_SCRIPT, keys: [key("discovery:lease")], argv: [token, @lease_ttl_ms]) == 1
       end
     end
@@ -247,7 +299,7 @@ module Acp
       result = with_client do |redis|
         redis.eval(
           DISCOVERY_REGISTER_SCRIPT,
-          keys: [key("discovery:lease"), key("tenants"), tenant_key(identity)],
+          keys: [key("discovery:lease"), key("tenants"), tenant_key(identity), key("membership:revision")],
           argv: [token, identity, generation]
         )
       end
@@ -260,7 +312,7 @@ module Acp
       result = with_client do |redis|
         redis.eval(
           DISCOVERY_COMPLETE_SCRIPT,
-          keys: [key("discovery:lease"), key("discovery:completed")],
+          keys: [key("discovery:lease"), key("discovery:completed"), key("membership:revision")],
           argv: [token, generation]
         )
       end
@@ -275,12 +327,12 @@ module Acp
     end
 
     def pause_tenant(tenant_id)
-      with_client { |redis| redis.hset(tenant_key(canonical_tenant_id(tenant_id)), "paused", 1) }
+      set_paused(tenant_id, "1")
       nil
     end
 
     def resume_tenant(tenant_id)
-      with_client { |redis| redis.hdel(tenant_key(canonical_tenant_id(tenant_id)), "paused") }
+      set_paused(tenant_id, "0")
       nil
     end
 
@@ -315,8 +367,10 @@ module Acp
 
     def acquire(tenant_id)
       identity = canonical_tenant_id(tenant_id)
-      known_worker = with_client { |redis| redis.zscore(key("workers"), encoded_worker_id) }
-      heartbeat_worker(capacity: 1, active: 0) unless known_worker
+      elapsed = @worker_heartbeat_at && Process.clock_gettime(Process::CLOCK_MONOTONIC) - @worker_heartbeat_at
+      if !elapsed || elapsed >= renewal_interval(nil)
+        heartbeat_worker(capacity: @worker_capacity || 1, active: @worker_active || 0)
+      end
       token = SecureRandom.hex(24)
       claimed = with_client do |redis|
         redis.eval(
@@ -334,7 +388,7 @@ module Acp
 
     def renew(tenant_id, lease)
       identity = canonical_tenant_id(tenant_id)
-      result = with_client do |redis|
+      result = with_client(lane: :renewal) do |redis|
         redis.eval(RENEW_SCRIPT, keys: [lease_key(identity)], argv: [lease.token, @lease_ttl_ms])
       end
       result == 1
@@ -419,7 +473,11 @@ module Acp
     end
 
     def heartbeat_worker(capacity:, active:)
-      with_client do |redis|
+      unless capacity.is_a?(Integer) && capacity.positive? && active.is_a?(Integer) && active >= 0
+        raise ConfigurationError, "worker capacity must be positive and activity nonnegative"
+      end
+
+      with_client(lane: :renewal) do |redis|
         result = redis.eval(
           WORKER_HEARTBEAT_SCRIPT,
           keys: [worker_key, key("workers")],
@@ -427,6 +485,9 @@ module Acp
         )
         raise ConfigurationError, "Redis worker_scan_limit exceeded" if result == "WORKER_LIMIT"
       end
+      @worker_capacity = capacity
+      @worker_active = active
+      @worker_heartbeat_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     def worker_statuses
@@ -444,13 +505,13 @@ module Acp
       end
       return {}.freeze if workers.empty?
 
-      tenant_ids.each do |tenant_id|
-        identity = canonical_tenant_id(tenant_id)
-        owner = workers.max_by do |encoded_id, status|
-          sample = Digest::SHA1.hexdigest("#{identity}|#{encoded_id}")[0, 13].to_i(16).fdiv(2**52)
-          sample * status.fetch("capacity", 1)
+      tenant_ids.each_slice(@claim_scan_limit) do |batch|
+        batch.each do |tenant_id|
+          identity = canonical_tenant_id(tenant_id)
+          owner = assigned_worker(identity, workers)
+          assignments.fetch(owner.first)["assigned_tenants"] += 1
         end
-        assignments.fetch(owner.first)["assigned_tenants"] += 1
+        Async::Task.current?&.yield
       end
 
       assignments.to_h do |encoded_id, status|
@@ -470,7 +531,28 @@ module Acp
       Base64.urlsafe_encode64(JSON.generate(value), padding: false)
     end
 
+    # Close idle connections after all runtime work has drained.
+    def close
+      @client_pools.each_value do |clients|
+        clients.pop.close until clients.empty?
+      end
+    end
+
     private
+
+    def set_paused(tenant_id, value)
+      with_client do |redis|
+        redis.eval(PAUSE_SCRIPT, keys: [tenant_key(canonical_tenant_id(tenant_id)), key("membership:revision")],
+                                 argv: [value])
+      end
+    end
+
+    def assigned_worker(identity, workers)
+      workers.min_by do |encoded_id, status|
+        sample = (Digest::SHA1.hexdigest("#{identity}|#{encoded_id}")[0, 13].to_i(16) + 1).fdiv((2**52) + 1)
+        [-Math.log(sample) / status.fetch("capacity", 1), encoded_id]
+      end
+    end
 
     def decode_tenant_id(identity)
       type, value = JSON.parse(Base64.urlsafe_decode64(identity + ("=" * ((4 - identity.length % 4) % 4))))
@@ -497,8 +579,12 @@ module Acp
         seconds, microseconds = redis.time
         now_ms = seconds.to_i * 1_000 + microseconds.to_i / 1_000
         redis.zremrangebyscore(key("workers"), "-inf", now_ms)
-        redis.zrange(key("workers"), 0, @worker_scan_limit - 1).map do |encoded_id|
-          status = redis.hgetall(key("worker:#{encoded_id}")).transform_values(&:to_i)
+        ids = redis.zrange(key("workers"), 0, @worker_scan_limit - 1)
+        statuses = redis.pipelined do |pipeline|
+          ids.each { |encoded_id| pipeline.hgetall(key("worker:#{encoded_id}")) }
+        end
+        ids.zip(statuses).map do |encoded_id, values|
+          status = values.transform_values(&:to_i)
           [encoded_id, status.freeze]
         end
       end
@@ -509,7 +595,17 @@ module Acp
     end
 
     def tenant_ids
-      identities = []
+      membership_records.filter_map do |identity, status, completed|
+        identity if status.fetch("generation", "0").to_i >= completed
+      end
+    end
+
+    def membership_records
+      revision = with_client { |redis| redis.get(key("membership:revision")) }
+      return @membership_records if @membership_records && @membership_revision == revision
+
+      records = []
+      completed = with_client { |redis| Integer(redis.get(key("discovery:completed")) || 0) }
       offset = 0
       loop do
         batch = with_client do |redis|
@@ -517,10 +613,17 @@ module Acp
         end
         break if batch.empty?
 
-        identities.concat(batch.select { |identity| enabled_identity?(identity) })
+        statuses = with_client do |redis|
+          redis.pipelined { |pipeline| batch.each { |identity| pipeline.hgetall(tenant_key(identity)) } }
+        end
+        batch.zip(statuses).each { |identity, status| records << [identity, status, completed] }
         offset += batch.length
       end
-      identities
+      @membership_revision = revision
+      @discovered_tenant_count = records.count do |_id, status, generation|
+        status.fetch("generation", "0").to_i >= generation
+      end
+      @membership_records = records
     end
 
     def enabled_identity?(identity)
@@ -544,11 +647,31 @@ module Acp
       key("progress:#{identity}")
     end
 
-    def with_client
-      client = @connection_factory ? @connection_factory.call : Redis.new(url: @redis_url, **@redis_options)
-      yield client
+    def with_client(lane: :commands)
+      semaphore = @client_semaphores.fetch(lane) if Async::Task.current?
+      semaphore&.acquire
+      acquired = true
+      pool = @client_pools.fetch(lane)
+      client = pool.pop || new_client
+      result = yield client
+      reusable = true
+      result
     ensure
-      client&.close if client.respond_to?(:close)
+      begin
+        if client
+          if reusable && client.respond_to?(:close)
+            pool << client
+          elsif client.respond_to?(:close)
+            client.close
+          end
+        end
+      ensure
+        semaphore&.release if acquired
+      end
+    end
+
+    def new_client
+      @connection_factory ? @connection_factory.call : Redis.new(url: @redis_url, **@redis_options)
     end
   end
   # rubocop:enable Metrics/ClassLength, Metrics/AbcSize, Metrics/MethodLength, Metrics/ParameterLists

@@ -73,12 +73,12 @@ module Acp
 
       def validate_pool_budget!(configuration, pool)
         concurrent_ingests = [configuration.ingest_concurrency, configuration.pipeline_capacity].min
-        required = configuration.pipeline_capacity + concurrent_ingests
+        required = configuration.effective_resolve_concurrency + concurrent_ingests + 1
         return if pool.size >= required
 
         raise ConfigurationError,
               "transaction pool size #{pool.size} is below the required #{required} " \
-              "(pipeline_capacity + effective ingest_concurrency)"
+              "(effective resolve_concurrency + effective ingest_concurrency + discovery)"
       end
 
       def validate_postgres!(pool)
@@ -99,6 +99,7 @@ module Acp
           fetch_concurrency: configuration.fetch_concurrency,
           ingest_concurrency: configuration.ingest_concurrency,
           pipeline_capacity: configuration.pipeline_capacity,
+          resolve_concurrency: configuration.resolve_concurrency,
           discovery_interval: configuration.discovery_interval,
           retry_cooldown: configuration.retry_cooldown
         }
@@ -141,14 +142,14 @@ module Acp
       end
 
       def rails_ingest_retry(policy)
-        if policy.on.empty? && policy.max_attempts == 1
+        if policy.on.empty? && policy.max_attempts == 1 && policy.max_elapsed.nil? && policy.timeout.nil?
           return RetryPolicy.new(on: database_failure_matcher, max_attempts: 3, max_elapsed: 30,
                                  backoff: 0.1, max_backoff: 1)
         end
 
         RetryPolicy.new(on: policy.on + [database_failure_matcher], max_attempts: policy.max_attempts,
                         max_elapsed: policy.max_elapsed, backoff: policy.backoff,
-                        max_backoff: policy.max_backoff, jitter: policy.jitter)
+                        max_backoff: policy.max_backoff, jitter: policy.jitter, timeout: policy.timeout)
       end
 
       def database_failure_matcher

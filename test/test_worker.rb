@@ -28,6 +28,15 @@ class TestWorker < Minitest::Test
     assert_includes error.string, "ACP_PROGRAM"
   end
 
+  def test_omitted_capacity_overrides_use_program_defaults
+    worker = Acp::Worker.new(["--program", "Sync", "--transaction-owner", "Owner"], environment: {})
+    options = worker.send(:parse_options)
+
+    assert_equal 300, worker.send(:integer_option, options, "fetch-concurrency", 300)
+    assert_equal 5, worker.send(:integer_option, options, "ingest-concurrency", 5)
+    assert_equal 4, worker.send(:integer_option, options, "resolve-concurrency", 4)
+  end
+
   # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
   def test_sigterm_drains_the_active_cycle_in_a_subprocess
     fixture = File.expand_path("fixtures/worker_signal.rb", __dir__)

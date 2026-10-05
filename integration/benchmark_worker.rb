@@ -33,6 +33,7 @@ program = Class.new(Acp::Program) do
   fetch_concurrency(Integer(ENV.fetch("ACP_BENCH_FETCH_CONCURRENCY", "2500")))
   ingest_concurrency(Integer(ENV.fetch("ACP_BENCH_INGEST_CONCURRENCY", "16")))
   pipeline_capacity(Integer(ENV.fetch("ACP_BENCH_PIPELINE_CAPACITY", "2500")))
+  resolve_concurrency(Integer(ENV.fetch("ACP_BENCH_RESOLVE_CONCURRENCY", "16")))
   tenants { |emit| (1..tenant_count).each { |tenant_id| emit.call(tenant_id) } }
   initial_cursor { |_tenant_id| Time.utc(2025, 1, 1) }
   resolve { |tenant_id| tenant_id }
@@ -74,7 +75,7 @@ discovery_seconds = nil
 # rubocop:disable Metrics/BlockLength
 Async do |root|
   runner = root.async { runtime.run }
-  root.sleep(0.05) while runtime.metrics.fetch(:assigned_tenants) < tenant_count
+  root.sleep(0.05) while runtime.metrics.fetch(:discovered_tenants) < tenant_count
   discovery_seconds = Process.clock_gettime(Process::CLOCK_MONOTONIC) - process_started_at
   puts JSON.generate(discovered: true, worker_id: worker_id, discovery_seconds: discovery_seconds)
   root.sleep(0.05) until File.exist?(start_file)

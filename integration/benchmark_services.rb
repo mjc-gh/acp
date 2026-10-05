@@ -84,8 +84,8 @@ begin
     ending_rss_by_pid = {}
     begin
       worker_count.times do |index|
-        pool_size = Integer(ENV.fetch("ACP_BENCH_PIPELINE_CAPACITY", "2500")) +
-                    Integer(ENV.fetch("ACP_BENCH_INGEST_CONCURRENCY", "16")) + 4
+        pool_size = Integer(ENV.fetch("ACP_BENCH_RESOLVE_CONCURRENCY", "16")) +
+                    Integer(ENV.fetch("ACP_BENCH_INGEST_CONCURRENCY", "16")) + 5
         environment = ENV.to_h.merge(
           "ACP_BENCH_APPLICATION" => run_application,
           "ACP_BENCH_WORKER_ID" => "bench-#{worker_count}-#{index + 1}",

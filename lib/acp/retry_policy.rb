@@ -3,7 +3,7 @@
 module Acp
   # Consumer-selected retry classification and bounded backoff parameters.
   class RetryPolicy
-    attr_reader :on, :max_attempts, :max_elapsed, :backoff, :max_backoff, :jitter
+    attr_reader :on, :max_attempts, :max_elapsed, :backoff, :max_backoff, :jitter, :timeout
 
     def initialize(on: [], **budgets)
       @on = normalize_matchers(on)
@@ -32,13 +32,14 @@ module Acp
     private
 
     def validate_budget_names!(budgets)
-      unknown = budgets.keys - %i[max_attempts max_elapsed backoff max_backoff jitter]
+      unknown = budgets.keys - %i[max_attempts max_elapsed backoff max_backoff jitter timeout]
       raise ConfigurationError, "unknown retry budgets: #{unknown.join(", ")}" unless unknown.empty?
     end
 
     def assign_budget_values(budgets)
       @max_attempts = positive_integer(budgets.fetch(:max_attempts, 1), "max_attempts")
-      @max_elapsed = nonnegative_number(budgets.fetch(:max_elapsed, 1), "max_elapsed")
+      @max_elapsed = optional_duration(budgets[:max_elapsed], "max_elapsed")
+      @timeout = optional_duration(budgets[:timeout], "timeout")
       @backoff = nonnegative_number(budgets.fetch(:backoff, 0), "backoff")
       @max_backoff = nonnegative_number(budgets.fetch(:max_backoff, 0), "max_backoff")
       @jitter = nonnegative_number(budgets.fetch(:jitter, 0), "jitter")
@@ -65,7 +66,7 @@ module Acp
     end
 
     def elapsed_allowed?(elapsed)
-      elapsed.is_a?(Numeric) && elapsed.finite? && elapsed >= 0 && elapsed < max_elapsed
+      elapsed.is_a?(Numeric) && elapsed.finite? && elapsed >= 0 && (max_elapsed.nil? || elapsed < max_elapsed)
     end
 
     def matches?(matcher, error)
@@ -111,6 +112,10 @@ module Acp
       return value if valid
 
       raise ConfigurationError, "#{name} must be a finite nonnegative number"
+    end
+
+    def optional_duration(value, name)
+      value.nil? ? nil : nonnegative_number(value, name)
     end
   end
 end

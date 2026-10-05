@@ -348,6 +348,240 @@ class TestRuntime < Minitest::Test
     assert_equal 0, runtime.metrics[:active_cycles]
   end
 
+  def test_lease_loss_removes_queued_ingestion_before_admitting_more_work
+    ingested = []
+    ownership = Acp::LocalOwnership.new
+    ownership.define_singleton_method(:renewal_interval) { |_token| 0.01 }
+    ownership.define_singleton_method(:renew) { |tenant_id, _token| tenant_id != "b" }
+    program = build_program(tenants: %w[a b c], interval: 1, ingest: lambda do |_batch, context|
+      ingested << context.tenant_id
+      Kernel.sleep(0.05) if context.tenant_id == "a"
+    end)
+    program.pipeline_capacity 2
+    program.ingest_concurrency 1
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new,
+                               ownership: ownership)
+    runtime.define_singleton_method(:initial_offset) { |_tenant_id| 0 }
+
+    run_for(runtime, duration: 0.1)
+
+    assert_equal %w[a c], ingested
+    assert_equal 1, runtime.metrics[:renewal_deadline_misses]
+    assert_operator runtime.metrics[:max_queued_batches], :<=, 2
+    assert_equal 0, runtime.metrics[:queued_batches]
+    assert_equal 0, runtime.metrics[:active_ingests]
+  end
+
+  def test_lease_loss_unwinds_active_ingestion_before_releasing_ownership
+    order = []
+    progress = MemoryProgress.new
+    ownership = Acp::LocalOwnership.new
+    ownership.define_singleton_method(:renewal_interval) { |_token| 0.01 }
+    ownership.define_singleton_method(:renew) { |*| false }
+    ownership.define_singleton_method(:release) { |*| order << :released }
+    program = build_program(interval: 1, ingest: lambda do |*|
+      Kernel.sleep(60)
+    ensure
+      order << :unwound
+    end)
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress, ownership: ownership)
+    runtime.define_singleton_method(:initial_offset) { |_tenant_id| 0 }
+
+    run_for(runtime, duration: 0.05)
+
+    assert_equal %i[unwound released], order
+    assert_empty progress.acknowledgements
+    assert_equal 0, runtime.metrics[:active_ingests]
+  end
+
+  def test_remote_resume_restores_a_paused_tenants_schedule
+    paused = true
+    fetches = 0
+    ownership = Acp::LocalOwnership.new
+    ownership.define_singleton_method(:tenant_paused?) { |_id| paused }
+    program = build_program(interval: 0.01, fetch: lambda do |_tenant, context|
+      fetches += 1
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end)
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new,
+                               ownership: ownership)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    Async do |root|
+      runner = root.async { runtime.run }
+      Kernel.sleep(0.03)
+      assert_equal 0, fetches
+      paused = false
+      Kernel.sleep(0.04)
+      runtime.request_shutdown(timeout: 1)
+      runner.wait
+    end
+
+    assert_operator fetches, :>, 0
+  end
+
+  def test_assignment_refresh_consumes_membership_without_discovery_leadership
+    assigned = ["a"]
+    fetched = []
+    ownership = Acp::LocalOwnership.new
+    ownership.define_singleton_method(:acquire_discovery) { nil }
+    ownership.define_singleton_method(:enabled_tenants) { assigned.dup }
+    ownership.define_singleton_method(:scheduling_tenants) { assigned.dup }
+    ownership.define_singleton_method(:renewal_interval) { |_token| 0.01 }
+    program = build_program(interval: 1, fetch: lambda do |_tenant, context|
+      fetched << context.tenant_id
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end)
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new,
+                               ownership: ownership)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    Async do |root|
+      runner = root.async { runtime.run }
+      Kernel.sleep(0.02)
+      assigned.replace(["b"])
+      Kernel.sleep(0.04)
+      runtime.request_shutdown(timeout: 1)
+      runner.wait
+    end
+
+    assert_equal %w[a b], fetched
+    assert_equal 1, runtime.metrics[:assigned_tenants]
+  end
+
+  def test_resolution_is_bounded_independently_of_fetch_concurrency
+    active = 0
+    maximum = 0
+    program = build_program(tenants: (1..8).to_a, interval: 1, fetch: lambda do |_tenant, context|
+      Kernel.sleep(0.05)
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end)
+    program.fetch_concurrency 6
+    program.pipeline_capacity 6
+    program.resolve_concurrency 2
+    program.resolve do |id|
+      active += 1
+      maximum = [maximum, active].max
+      Kernel.sleep(0.01)
+      id
+    ensure
+      active -= 1
+    end
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    run_for(runtime, duration: 0.15)
+
+    assert_equal 2, maximum
+    assert_operator runtime.metrics[:max_active_fetches], :>, 2
+    assert_equal 0, active
+  end
+
+  def test_overlapping_cycles_reschedule_their_own_tenant
+    fetches = Hash.new(0)
+    program = build_program(tenants: %w[a b c], interval: 0.03, fetch: lambda do |tenant, context|
+      fetches[tenant] += 1
+      Kernel.sleep(tenant == "a" ? 0.02 : 0.005)
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end)
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    run_for(runtime, duration: 0.12)
+
+    %w[a b c].each { |id| assert_operator fetches[id], :>=, 3 }
+    assert_equal 0, runtime.metrics[:active_cycles]
+  end
+
+  def test_fetch_timeout_retries_within_a_total_deadline
+    attempts = []
+    program = build_program(interval: 1, fetch: lambda do |_tenant, context|
+      attempts << context
+      Kernel.sleep(60)
+    end, fetch_retry: { on: Timeout::Error, max_attempts: 5, timeout: 0.01, max_elapsed: 0.025 })
+    progress = MemoryProgress.new
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    run_for(runtime, duration: 0.06)
+
+    assert_operator attempts.length, :>=, 2
+    assert_operator attempts.length, :<=, 3
+    assert_equal 1, attempts.map(&:poll_id).uniq.length
+    assert_empty progress.acknowledgements
+    assert_equal 0, runtime.metrics[:active_fetches]
+  end
+
+  def test_backoff_cannot_start_an_attempt_after_the_deadline
+    attempts = 0
+    program = build_program(interval: 1, fetch: lambda do |*|
+      attempts += 1
+      raise IOError
+    end, fetch_retry: { on: IOError, max_attempts: 3, max_elapsed: 0.02, backoff: 1, max_backoff: 1 })
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    run_for(runtime, duration: 0.05)
+
+    assert_equal 1, attempts
+    assert_equal 0, runtime.metrics[:active_cycles]
+  end
+
+  def test_ingestion_deadline_unwinds_work_without_acknowledging
+    unwound = false
+    progress = MemoryProgress.new
+    program = build_program(interval: 1, ingest: lambda do |*|
+      Kernel.sleep(60)
+    ensure
+      unwound = true
+    end, ingest_retry: { max_elapsed: 0.02 })
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    run_for(runtime, duration: 0.05)
+
+    assert unwound
+    assert_empty progress.acknowledgements
+    assert_equal 0, runtime.metrics[:active_ingests]
+    assert_equal 0, runtime.metrics[:queued_batches]
+  end
+
+  def test_ingestion_attempt_timeout_can_retry_the_same_batch
+    attempts = []
+    progress = MemoryProgress.new
+    program = build_program(interval: 1, ingest: lambda do |batch, context|
+      attempts << [batch.object_id, context.poll_id, context.attempt]
+      Kernel.sleep(60) if context.attempt == 1
+    end, ingest_retry: { on: Timeout::Error, timeout: 0.01, max_elapsed: 0.1, max_attempts: 2 })
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    run_for(runtime, duration: 0.05)
+
+    assert_equal [1, 2], attempts.map(&:last)
+    assert_equal attempts.first.first(2), attempts.last.first(2)
+    assert_equal 1, progress.acknowledgements.length
+    assert_equal 0, runtime.metrics[:active_ingests]
+  end
+
+  def test_timeout_after_confirmed_commit_does_not_replay_ingestion
+    committed = 0
+    progress = MemoryProgress.new
+    subscription = ActiveSupport::Notifications.subscribe("ingestion_completed.acp") { |*| Kernel.sleep(60) }
+    program = build_program(interval: 1, ingest: ->(*) { committed += 1 },
+                            ingest_retry: { on: Timeout::Error, timeout: 0.01, max_elapsed: 0.1, max_attempts: 2 })
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    run_for(runtime, duration: 0.05)
+
+    assert_equal 1, committed
+    assert_equal 1, progress.acknowledgements.length
+    assert_equal 0, runtime.metrics[:active_ingests]
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscription) if subscription
+  end
+
   def test_graceful_shutdown_finishes_active_ingestion_before_returning
     fetch_started = false
     ingested = false

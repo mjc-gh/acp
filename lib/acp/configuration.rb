@@ -8,7 +8,7 @@ module Acp
 
     attr_reader :name, :interval, :fetch_concurrency, :ingest_concurrency,
                 :pipeline_capacity, :callbacks, :fetch_retry, :ingest_retry,
-                :discovery_interval, :retry_cooldown
+                :discovery_interval, :retry_cooldown, :resolve_concurrency
 
     def initialize(name:, settings:, callbacks:, fetch_retry:, ingest_retry:)
       @name = validate_name(name)
@@ -26,6 +26,10 @@ module Acp
       [fetch_concurrency, pipeline_capacity].min
     end
 
+    def effective_resolve_concurrency
+      [resolve_concurrency, pipeline_capacity].min
+    end
+
     def callback(name)
       callbacks.fetch(name.to_sym)
     end
@@ -37,6 +41,8 @@ module Acp
       @fetch_concurrency = positive_integer(settings.fetch(:fetch_concurrency), "fetch_concurrency")
       @ingest_concurrency = positive_integer(settings.fetch(:ingest_concurrency), "ingest_concurrency")
       @pipeline_capacity = positive_integer(settings.fetch(:pipeline_capacity), "pipeline_capacity")
+      resolve_limit = settings.fetch(:resolve_concurrency, ingest_concurrency)
+      @resolve_concurrency = positive_integer(resolve_limit, "resolve_concurrency")
     end
 
     def validate_definition!(settings, callbacks)
