@@ -4,6 +4,7 @@ require "json"
 require "rbconfig"
 require_relative "../test/fixtures/reliability_upstream"
 require_relative "../lib/acp"
+require_relative "workload"
 
 # In-memory progress adapter used only by the local scheduler benchmark.
 class BenchmarkProgress
@@ -22,6 +23,7 @@ class BenchmarkProgress
   end
 
   def advance(tenant_id, poll_id, cursor, expected_revision:, **_options)
+    Kernel.sleep(CapacityWorkload.number("ACKNOWLEDGE_DELAY", 0))
     state = @states.fetch(tenant_id)
     return true if state.poll_id == poll_id
     raise "progress revision conflict" unless state.revision == expected_revision
@@ -45,7 +47,8 @@ raise ArgumentError, "tenant count must be positive" unless tenant_count.positiv
 raise ArgumentError, "duration must be positive" unless duration.positive?
 
 tenants = (1..tenant_count).to_a.freeze
-upstream = ReliabilityUpstream.new(seed: seed, latency: latency, payload_size: payload_size)
+upstream = ReliabilityUpstream.new(seed: seed, latency: latency, payload_size: payload_size,
+                                   **CapacityWorkload.upstream_options)
 program = Class.new(Acp::Program) do
   define_singleton_method(:name) { "AcpReliabilityBenchmark" }
   interval(interval)
@@ -56,8 +59,9 @@ program = Class.new(Acp::Program) do
   initial_cursor { |_tenant_id| Time.utc(2025, 1, 1) }
   resolve { |tenant_id| tenant_id }
   fetch { |tenant_id, context| upstream.fetch(tenant_id: tenant_id, cursor: context.cursor) }
-  ingest { |_batch, _context| }
+  ingest { |_batch, _context| Kernel.sleep(CapacityWorkload.number("INGEST_DELAY", 0)) }
 end
+CapacityWorkload.configure(program)
 progress = BenchmarkProgress.new
 runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
 initial_rss = File.read("/proc/self/status").match(/^VmRSS:\s+(\d+)\s+kB$/)[1].to_i / 1024.0
@@ -65,6 +69,8 @@ peak_rss = initial_rss
 reactor_lags = { count: 0, sum: 0.0, max: 0.0 }
 pressure_peaks = { overdue_tenants: 0, oldest_overdue_age: 0.0 }
 started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+window_samples = []
+measurement_completed = nil
 
 Async do |root|
   runner = root.async { runtime.run }
@@ -82,7 +88,12 @@ Async do |root|
       reactor_lags[:max] = [reactor_lags[:max], lag].max
     end
   end
-  root.sleep(duration)
+  CapacityWorkload.boundaries(duration).each do |at|
+    root.sleep([started_at + at - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max)
+    window_samples << { at_seconds: at, completed_cycles: runtime.metrics[:completed_cycles],
+                        rss_megabytes: CapacityWorkload.rss }
+  end
+  measurement_completed = runtime.metrics[:completed_cycles]
   runtime.request_shutdown(timeout: 10)
   runner.wait
   sampler.stop
@@ -102,14 +113,25 @@ report = {
     [name, spec&.version&.to_s]
   end,
   platform: RbConfig::CONFIG.fetch("host"),
-  os_release: os_release&.delete_prefix("\"")&.delete_suffix("\""),
+  os_release: os_release&.strip&.delete_prefix("\"")&.delete_suffix("\""),
   tenant_count: tenant_count,
   capacities: {
     fetch: fetch_capacity,
+    resolve: program.configuration.resolve_concurrency,
     ingest: ingest_capacity,
     pipeline: pipeline_capacity
   },
   duration_seconds: elapsed.round(3),
+  measurement_duration_seconds: duration,
+  workload: CapacityWorkload.describe,
+  post_warmup_windows: window_samples.each_cons(2).map do |left, right|
+    { duration_seconds: right[:at_seconds] - left[:at_seconds],
+      throughput_cycles_per_second: (right[:completed_cycles] - left[:completed_cycles]) /
+        (right[:at_seconds] - left[:at_seconds]),
+      ending_rss_megabytes: right[:rss_megabytes] }
+  end,
+  measurement_completed_cycles: measurement_completed,
+  drain_completed_cycles: completed - measurement_completed,
   configured_latency_seconds: latency,
   measured_latency_seconds: {
     p50_bucket_upper_bound: upstream.latency_percentile(0.50),
@@ -123,6 +145,7 @@ report = {
   throughput_cycles_per_second: (completed / elapsed).round(2),
   observer_reactor_lag_seconds: reactor_lags,
   runtime_pressure: metrics,
+  stage_residence_seconds: CapacityWorkload.stage_times(metrics),
   sampled_pressure_peaks: pressure_peaks,
   pressure_histogram_boundaries_seconds: Acp::PressureMetrics::BOUNDARIES,
   polling_lag_seconds_bucket_upper_bounds: metrics.slice(
@@ -136,4 +159,4 @@ report = {
   peak_rss_megabytes: peak_rss.round(2),
   ending_rss_megabytes: ending_rss.round(2)
 }
-puts JSON.pretty_generate(report)
+CapacityWorkload.write_report(report)

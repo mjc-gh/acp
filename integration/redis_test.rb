@@ -15,10 +15,12 @@ class RedisCoordinationIntegrationTest < Minitest::Test
       @client = client
     end
 
-    def eval(script, **options)
-      raise Redis::CannotConnectError, "simulated network outage" if script == Acp::RedisCoordinator::CLAIM_SCRIPT
+    def evalsha(sha, **options)
+      if sha == Acp::RedisCoordinator::SCRIPT_SHAS.fetch(Acp::RedisCoordinator::CLAIM_SCRIPT)
+        raise Redis::CannotConnectError, "simulated network outage"
+      end
 
-      @client.eval(script, **options)
+      @client.evalsha(sha, **options)
     end
 
     def method_missing(name, ...)
@@ -411,9 +413,210 @@ class RedisCoordinationIntegrationTest < Minitest::Test
     assert_equal 0, runtime.metrics[:active_cycles]
   end
 
+  def test_ownership_loss_while_parked_cancels_the_cycle_and_releases_retry_capacity
+    attempts = 0
+    program = Class.new(Acp::Program) do
+      program_name "RedisParkedLeaseTest"
+      interval 60
+      pipeline_capacity 1
+      retry_capacity 1
+      fetch_concurrency 1
+      ingest_concurrency 1
+      tenants { |emit| emit.call("tenant") }
+      initial_cursor { |_| Time.utc(2025, 1, 1) }
+      resolve { |id| id }
+      fetch do |*|
+        attempts += 1
+        raise IOError
+      end
+      fetch_retry on: IOError, max_attempts: 3, backoff: 10, max_backoff: 10
+      ingest { |*| raise "lost owner must never ingest" }
+    end
+    @store = build_store(worker_id: "worker-a", lease_ttl: 3)
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: @store, ownership: @store)
+    runtime.define_singleton_method(:initial_offset) { |_| 0 }
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(2) { Kernel.sleep(0.005) until runtime.metrics[:parked_cycles] == 1 }
+      redis = Redis.new(url: @url)
+      redis.del(@store.send(:lease_key, @store.canonical_tenant_id("tenant")))
+      redis.close
+      root.with_timeout(2) { Kernel.sleep(0.005) until runtime.metrics[:active_cycles].zero? }
+      runtime.request_shutdown(timeout: 0.1)
+      runner.wait
+    end.wait
+    assert_equal 1, attempts
+    assert_equal 1, runtime.metrics[:renewal_deadline_misses]
+    assert_equal 0, runtime.metrics[:retry_reservations]
+    assert_equal 0, runtime.metrics[:parked_cycles]
+  end
+
+  def test_stalled_command_deadline_discards_connection_and_shutdown_unwinds_socket_io
+    clients = []
+    @store = build_store(worker_id: "worker-a", connection_factory: lambda do
+      client = Redis.new(url: @url)
+      clients << client
+      client
+    end)
+    Async do |root|
+      adapter = Acp::DeadlineAdapter.new(@store, 0.01)
+      @store.define_singleton_method(:stall) do
+        with_client { |redis| redis.blpop("#{@prefix}:stall", timeout: 60) }
+      end
+      assert_raises(Acp::StageTimeoutError) { adapter.stall }
+      assert_empty @store.instance_variable_get(:@client_pools)[:commands]
+      @store.send(:with_client) { |redis| assert_equal "PONG", redis.ping }
+      assert_equal 2, clients.length
+      task = root.async { @store.stall }
+      root.yield
+      task.stop
+      assert_empty @store.instance_variable_get(:@client_pools)[:commands]
+    end.wait
+  end
+
+  def test_batch_discovery_revision_counts_duplicates_empty_completion_and_expired_owner
+    redis = Redis.new(url: @url)
+    revision_key = @store.send(:key, "membership:revision")
+    before = redis.get(revision_key).to_i
+    token = @store.acquire_discovery
+    generation = @store.begin_discovery(token)
+    @store.register_discovered_tenants(["a", "a", 12], generation, token)
+    assert_equal before + 1, redis.get(revision_key).to_i
+    assert_includes @store.enabled_tenants, "tenant"
+    @store.complete_discovery(generation, token)
+    assert_equal before + 2, redis.get(revision_key).to_i
+    assert_equal [12, "a"], @store.enabled_tenants.sort_by(&:to_s)
+
+    # Force expiry according to server time while retaining the old token/hash.
+    redis.hset(@store.send(:key, "discovery:lease"), "deadline", 0)
+    assert_raises(Acp::LeaseLostError) { @store.register_discovered_tenants(["stale"], generation, token) }
+    assert_raises(Acp::LeaseLostError) { @store.complete_discovery(generation, token) }
+    replacement = @store.acquire_discovery
+    next_generation = @store.begin_discovery(replacement)
+    assert_raises(Acp::LeaseLostError) { @store.register_discovered_tenants(["stale"], generation, token) }
+    @store.release_discovery(token)
+    assert @store.renew_discovery(replacement)
+    @store.complete_discovery(next_generation, replacement)
+    assert_empty @store.enabled_tenants
+    assert_equal before + 3, redis.get(revision_key).to_i
+  ensure
+    @store.release_discovery(replacement) if replacement
+    redis&.close
+  end
+
+  def test_script_flush_and_new_connections_recover_without_replaying_progress
+    lease = @store.acquire("tenant")
+    state = @store.initialize_state("tenant", Time.utc(2025, 1, 1))
+    redis = Redis.new(url: @url)
+    redis.script(:flush)
+    assert @store.renew("tenant", lease)
+    assert @store.valid?("tenant", lease)
+    assert @store.advance("tenant", "same-poll", state.cursor, expected_revision: 0, lease: lease)
+    @store.close
+    redis.script(:flush)
+    assert @store.advance("tenant", "same-poll", state.cursor, expected_revision: 0, lease: lease)
+    assert_equal 1, @store.read_state("tenant").revision
+    redis.script(:flush)
+    assert_equal [12, "tenant"], @store.enabled_tenants.sort_by(&:to_s)
+    @store.release("tenant", lease)
+    refute @store.valid?("tenant", lease)
+  ensure
+    redis&.close
+  end
+
+  def test_cached_assignment_cannot_authorize_claim_after_rebalance_or_old_token_after_takeover
+    @store.heartbeat_worker(capacity: 1, active: 0)
+    assert_includes @store.scheduling_tenants, "tenant"
+    other = build_store(worker_id: "worker-b")
+    other.heartbeat_worker(capacity: 1000, active: 0)
+    assert_includes other.scheduling_tenants, "tenant"
+    assert_nil @store.acquire("tenant"), "a stale local assignment cannot bypass the live registry"
+    lease = other.acquire("tenant")
+    refute_nil lease
+    state = other.initialize_state("tenant", Time.utc(2025, 1, 1))
+    redis = Redis.new(url: @url)
+    redis.hset(other.send(:lease_key, other.canonical_tenant_id("tenant")), "deadline", 0)
+    refute other.valid?("tenant", lease), "token equality alone is insufficient after expiry"
+    replacement = other.acquire("tenant")
+    refute_nil replacement
+    assert_raises(Acp::LeaseLostError) do
+      other.advance("tenant", "stale-poll", state.cursor, expected_revision: 0, lease: lease)
+    end
+    other.release("tenant", lease)
+    assert other.valid?("tenant", replacement)
+    redis.hset(other.send(:worker_key), "capacity", 1)
+    redis.zadd(other.send(:key, "workers"), 0, other.send(:encoded_worker_id))
+    assert_includes @store.scheduling_tenants, "tenant", "expired workers rebalance to surviving workers"
+  ensure
+    redis&.close
+  end
+
+  def test_runtime_partial_discovery_failure_keeps_previous_generation_enabled
+    program = Class.new(Acp::Program) do
+      program_name "PartialDiscovery"
+      interval 60
+      pipeline_capacity 1
+      fetch_concurrency 1
+      ingest_concurrency 1
+      discovery_batch_size 2
+      tenants do |emit|
+        3.times { |id| emit.call(id) }
+        raise IOError, "scan interrupted"
+      end
+      initial_cursor { |_| Time.utc(2025, 1, 1) }
+      resolve { |id| id }
+      fetch { |_, context| Acp::Batch.new(data: [], next_cursor: context.cursor) }
+      ingest { |*| nil }
+    end
+    runtime = Acp::Runtime.new(configuration: program.configuration, ownership: @store, progress: @store)
+    Async { assert_raises(IOError) { runtime.send(:perform_discovery) } }.wait
+    assert_equal [0, 1, 12, "tenant"], @store.enabled_tenants.sort_by(&:to_s)
+    token = @store.acquire_discovery
+    refute_nil token, "failed discovery releases its lease"
+    @store.release_discovery(token)
+  end
+
+  def test_large_membership_scan_and_saturated_command_pool_leave_renewal_responsive
+    started = Async::Queue.new
+    gate = Async::Queue.new
+    fault = { enabled: false }
+    factory = lambda do
+      client = Redis.new(url: @url)
+      original = client.method(:pipelined)
+      client.define_singleton_method(:pipelined) do |**options, &block|
+        if fault[:enabled] && !fault[:gated]
+          fault[:gated] = true
+          started.push(true)
+          gate.pop
+        end
+        original.call(**options, &block)
+      end
+      client
+    end
+    @store = build_store(worker_id: "worker-a", connection_factory: factory,
+                         connection_pool_size: 1, renewal_pool_size: 1, claim_scan_limit: 16)
+    @store.register_tenants((1..1024).to_a)
+    lease = @store.acquire(1)
+    fault[:enabled] = true
+    Async do |root|
+      scan = root.async { @store.enabled_tenants }
+      root.with_timeout(2) { started.pop }
+      follower = root.async { @store.enabled_tenants }
+      assignment = root.async { @store.scheduling_tenants }
+      root.yield
+      root.with_timeout(1) { assert @store.renew(1, lease) }
+      assert_operator @store.metrics[:pressure][:lease_renewal_slack][:min], :>, 0
+      gate.push(true)
+      snapshots = root.with_timeout(3) { [scan, follower, assignment].map(&:wait) }
+      assert_equal snapshots.first.sort_by(&:to_s), snapshots.last.sort_by(&:to_s)
+      assert_equal snapshots.first, snapshots[1]
+      assert_equal 1025, snapshots.first.length
+    end.wait
+  end
+
   private
 
-  def build_store(worker_id:, lease_ttl: 6, connection_factory: nil, renewal_pool_size: 8)
+  def build_store(worker_id:, lease_ttl: 6, connection_factory: nil, renewal_pool_size: 8, **options)
     store = Acp::RedisCoordinator.new(
       application: @application,
       environment: "test",
@@ -422,7 +625,8 @@ class RedisCoordinationIntegrationTest < Minitest::Test
       worker_id: worker_id,
       lease_ttl: lease_ttl,
       connection_factory: connection_factory,
-      renewal_pool_size: renewal_pool_size
+      renewal_pool_size: renewal_pool_size,
+      **options
     )
     @stores << store
     store

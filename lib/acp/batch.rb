@@ -3,13 +3,14 @@
 module Acp
   # Consumer data paired with the explicit cursor produced by one fetch.
   class Batch
-    attr_reader :data, :next_cursor
+    attr_reader :data, :next_cursor, :size_bytes
 
-    def initialize(data:, next_cursor:)
+    def initialize(data:, next_cursor:, size_bytes: nil)
       raise InvalidBatchError, "batch data cannot be nil" if data.nil?
       raise InvalidBatchError, "batch next_cursor is required" if next_cursor.nil?
 
       @data = data
+      @size_bytes = validate_size(size_bytes)
       @next_cursor = Timestamp.normalize(next_cursor)
       freeze
     rescue ArgumentError => e
@@ -22,6 +23,14 @@ module Acp
       raise CursorRegressionError, "next_cursor cannot move backwards" if next_cursor < cursor
 
       self
+    end
+
+    private
+
+    def validate_size(value)
+      return value if value.nil? || (value.is_a?(Integer) && value >= 0)
+
+      raise InvalidBatchError, "size_bytes must be a nonnegative integer"
     end
   end
 end

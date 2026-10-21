@@ -113,7 +113,7 @@ module Acp
     def configuration_for(options)
       program = constantize(options.fetch("program"))
       base = program.configuration
-      settings = {
+      settings = Program::SETTING_NAMES.to_h { |name| [name, base.public_send(name)] }.merge(
         interval: base.interval,
         fetch_concurrency: integer_option(options, "fetch-concurrency", base.fetch_concurrency),
         ingest_concurrency: integer_option(options, "ingest-concurrency", base.ingest_concurrency),
@@ -121,13 +121,14 @@ module Acp
         pipeline_capacity: integer_option(options, "pipeline-capacity", base.pipeline_capacity),
         discovery_interval: Float(options.fetch("discovery-interval")),
         retry_cooldown: base.retry_cooldown
-      }
+      )
       configured = Configuration.new(
         name: base.name,
         settings: settings,
         callbacks: base.callbacks,
         fetch_retry: base.fetch_retry,
-        ingest_retry: base.ingest_retry
+        ingest_retry: base.ingest_retry,
+        acknowledge_retry: base.acknowledge_retry
       )
       ::Acp::Rails.configuration_for(
         configured,

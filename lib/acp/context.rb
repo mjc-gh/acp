@@ -24,6 +24,23 @@ module Acp
     end
   end
 
-  class FetchContext < Context; end
+  # Consumers check cumulative wire bytes before retaining each incoming chunk.
+  class FetchContext < Context
+    attr_reader :max_response_bytes, :reserved_bytes
+
+    def initialize(max_response_bytes: nil, reserved_bytes: nil, **options)
+      @max_response_bytes = max_response_bytes
+      @reserved_bytes = reserved_bytes
+      super(**options)
+    end
+
+    def validate_response_bytes!(bytes)
+      raise ArgumentError, "response bytes must be nonnegative" unless bytes.is_a?(Integer) && bytes >= 0
+      raise PayloadLimitError, "response exceeds max_response_bytes" if max_response_bytes && bytes > max_response_bytes
+
+      bytes
+    end
+  end
+
   class IngestContext < Context; end
 end

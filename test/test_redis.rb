@@ -118,6 +118,43 @@ class TestRedisCoordinator < Minitest::Test
 
   # The gates fix checkout and service boundaries independently of wall-clock speed.
   # rubocop:disable Metrics/MethodLength, Metrics/AbcSize
+  def test_deadline_covers_checkout_and_discards_timed_out_command_connections
+    clients = []
+    factory = lambda do
+      client = Struct.new(:closed) { def close = self.closed = true }.new(false)
+      clients << client
+      client
+    end
+    store = coordinator(connection_factory: factory, connection_pool_size: 1, operation_timeout: 0.005)
+    gate = Async::Queue.new
+    started = Async::Queue.new
+    Async do |root|
+      holder = root.async do
+        store.send(:checkout_client, lane: :commands) do
+          started.push(true)
+          gate.pop
+        end
+      end
+      started.pop
+      assert_raises(Acp::StageTimeoutError) do
+        store.send(:with_client) { flunk "timed out checkout ran a command" }
+      end
+      assert_equal 1, clients.length
+      refute clients.first.closed
+      gate.push(true)
+      holder.wait
+      assert_raises(Acp::StageTimeoutError) { store.send(:with_client) { Kernel.sleep(60) } }
+      assert clients.first.closed
+      store.send(:with_client) { |client| refute client.closed }
+      assert_equal 2, clients.length
+    end.wait
+    pressure = store.metrics[:pressure]
+    assert_equal 1, pressure[:commands_checkout][:outcomes][:timeout]
+    assert_equal 1, pressure[:commands_service][:outcomes][:timeout]
+  ensure
+    store&.close
+  end
+
   def test_checkout_contention_and_cancellation_have_separate_service_distributions
     clock = Clock.new(0.0)
     store = coordinator(clock: clock, connection_pool_size: 1,
@@ -157,7 +194,7 @@ class TestRedisCoordinator < Minitest::Test
     delay = 0.4
     response = 1
     client = Object.new
-    client.define_singleton_method(:eval) do |*|
+    client.define_singleton_method(:evalsha) do |*|
       clock.now += delay
       response
     end
@@ -237,7 +274,7 @@ class TestRedisCoordinator < Minitest::Test
   def test_cancelled_renewal_checkout_records_partial_slack_without_moving_the_deadline
     clock = Clock.new(0.0)
     client = Object.new
-    client.define_singleton_method(:eval) { |*| 1 }
+    client.define_singleton_method(:evalsha) { |*| 1 }
     client.define_singleton_method(:close) {}
     store = coordinator(clock: clock, lease_ttl: 3, renewal_pool_size: 1, connection_factory: -> { client })
     lease = store.acquire("a")
@@ -274,6 +311,249 @@ class TestRedisCoordinator < Minitest::Test
     assigned_count = assignments.values.map { |status| status.fetch("assigned_tenants") }.sum
     assert_equal 100, assigned_count
   end
+
+  # These tests gate cooperative operations to exercise cancellation and revision races.
+  # rubocop:disable Metrics/MethodLength, Metrics/AbcSize, Metrics/BlockLength
+  def test_scripts_recover_only_noscript_and_do_not_replay_ambiguous_mutations
+    calls = []
+    failure = Redis::CommandError.new("NOSCRIPT No matching script")
+    client = Object.new
+    client.define_singleton_method(:evalsha) do |sha, **options|
+      calls << [:evalsha, sha, options]
+      raise failure if failure
+
+      1
+    end
+    client.define_singleton_method(:eval) do |script, **options|
+      calls << [:eval, script, options]
+      1
+    end
+    store = coordinator
+    script = Acp::RedisCoordinator::ADVANCE_SCRIPT
+    options = { keys: %w[progress initialized lease], argv: ["id", "poll", 0, "token", "cursor"] }
+    assert_equal 1, store.send(:execute_script, client, script, **options)
+    assert_equal [[:evalsha, Digest::SHA1.hexdigest(script), options], [:eval, script, options]], calls
+    failure = IOError.new("reply lost after execution")
+    assert_raises(IOError) { store.send(:execute_script, client, script, **options) }
+    assert_equal(1, calls.count { |call| call.first == :eval })
+    failure = Redis::CommandError.new("ERR wrong key type")
+    assert_raises(Redis::CommandError) { store.send(:execute_script, client, script, **options) }
+    assert_equal(1, calls.count { |call| call.first == :eval })
+  end
+
+  def test_membership_refresh_is_single_flight_and_retries_mixed_revisions
+    revision = "1"
+    client = Object.new
+    client.define_singleton_method(:get) { |_| revision }
+    store = coordinator(connection_factory: -> { client })
+    gate = Async::Queue.new
+    started = Async::Queue.new
+    scans = 0
+    store.define_singleton_method(:scan_membership) do
+      scans += 1
+      value = revision
+      started.push(true)
+      gate.pop
+      [[value, { "generation" => "0" }, 0]]
+    end
+    Async do |root|
+      first = root.async { store.send(:membership_records) }
+      started.pop
+      followers = 5.times.map { root.async { store.send(:membership_records) } }
+      root.yield
+      revision = "2"
+      gate.push(true)
+      started.pop
+      gate.push(true)
+      snapshots = [first, *followers].map(&:wait)
+      assert_equal 2, scans
+      assert_equal 1, snapshots.map(&:object_id).uniq.length
+      assert_equal "2", snapshots.first.revision
+      assert_equal "2", snapshots.first.records.first.first
+      assert_same snapshots.first, store.send(:membership_records)
+    end.wait
+  end
+
+  def test_snapshot_leader_cancellation_and_failure_wake_waiters_and_allow_retry
+    store = coordinator
+    %i[membership assignment].each do |name|
+      Async do |root|
+        started = Async::Queue.new
+        leader = root.async do
+          store.send(:single_flight, name) do
+            started.push(true)
+            Kernel.sleep(60)
+          end
+        end
+        started.pop
+        follower = root.async do
+          assert_raises(Acp::CancellationError) { store.send(:single_flight, name) { flunk "duplicate work" } }
+        end
+        cancelled_waiter = root.async { store.send(:single_flight, name) { flunk "duplicate work" } }
+        root.yield
+        cancelled_waiter.stop
+        leader.stop
+        root.with_timeout(1) { follower.wait }
+        assert_equal :recovered, store.send(:single_flight, name) { :recovered }
+        gate = Async::Queue.new
+        failed = root.async do
+          assert_raises(IOError) do
+            store.send(:single_flight, name) do
+              gate.pop
+              raise IOError, "snapshot failed"
+            end
+          end
+        end
+        waiter = root.async { assert_raises(IOError) { store.send(:single_flight, name) { flunk } } }
+        root.yield
+        gate.push(true)
+        root.with_timeout(1) { [failed, waiter].each(&:wait) }
+      end.wait
+    end
+    assert_empty store.instance_variable_get(:@snapshot_flights)
+  end
+
+  def test_continuous_membership_churn_is_bounded_and_does_not_publish
+    revision = 0
+    client = Object.new
+    client.define_singleton_method(:get) { |_| (revision += 1).to_s }
+    store = coordinator(connection_factory: -> { client })
+    scans = 0
+    store.define_singleton_method(:scan_membership) do
+      scans += 1
+      []
+    end
+    assert_raises(Acp::ProgressConflictError) { store.send(:membership_records) }
+    assert_equal 3, scans
+    assert_nil store.instance_variable_get(:@membership_records)
+    assert_empty store.instance_variable_get(:@snapshot_flights)
+  end
+
+  def test_simultaneous_assignment_callers_share_registry_scan_and_computation
+    store = coordinator(worker_id: "worker-a")
+    scans = 0
+    gate = Async::Queue.new
+    started = Async::Queue.new
+    store.define_singleton_method(:live_worker_records) do
+      scans += 1
+      started.push(true)
+      gate.pop
+      [[Base64.urlsafe_encode64("worker-a", padding: false), { "capacity" => 1 }]]
+    end
+    snapshot = Acp::RedisCoordinator::Membership.new(
+      records: [[store.canonical_tenant_id(1), { "generation" => "0" }, 0]], revision: "1"
+    )
+    store.define_singleton_method(:membership_records) { snapshot }
+    Async do |root|
+      leader = root.async { store.scheduling_tenants }
+      started.pop
+      followers = 5.times.map { root.async { store.scheduling_tenants } }
+      root.yield
+      gate.push(true)
+      assert_equal [[1]] * 6, [leader, *followers].map(&:wait)
+      assert_equal 1, scans
+    end.wait
+  end
+
+  def discovery_runtime(ids, batch_size: 3, &callback)
+    program = Class.new(Acp::Program) do
+      program_name "BoundedDiscoveryTest"
+      interval 60
+      pipeline_capacity 1
+      fetch_concurrency 1
+      ingest_concurrency 1
+      discovery_batch_size batch_size
+      tenants(&callback || ->(emit) { ids.each { |id| emit.call(id) } })
+      initial_cursor { |_| Time.utc(2025, 1, 1) }
+      resolve { |id| id }
+      fetch { |_, context| Acp::Batch.new(data: [], next_cursor: context.cursor) }
+      ingest { |*| nil }
+    end
+    store = coordinator
+    batches = []
+    completed = []
+    store.define_singleton_method(:acquire_discovery) { "token" }
+    store.define_singleton_method(:begin_discovery) { |_| 1 }
+    store.define_singleton_method(:release_discovery) { |_| nil }
+    store.define_singleton_method(:complete_discovery) { |*| completed << true }
+    store.define_singleton_method(:register_discovered_tenants) { |batch, *| batches << batch.dup }
+    runtime = Acp::Runtime.new(configuration: program.configuration, ownership: store, progress: store)
+    [runtime, batches, completed, program]
+  end
+
+  def test_discovery_flushes_bounded_chunks_and_final_partial_chunk_and_deduplicates
+    [[], [1], [1, 2, 3], [1, 2, 3, 4, 4, 5, 6, 7]].each do |ids|
+      runtime, batches, completed = discovery_runtime(ids)
+      states = Async { runtime.send(:perform_discovery) }.wait
+      assert_equal ids.uniq, states.map(&:tenant_id)
+      assert_equal ids.uniq.each_slice(3).to_a, batches
+      assert_equal [true], completed
+    end
+  end
+
+  def test_discovery_failure_and_cancellation_never_flush_partial_buffer_or_complete
+    runtime, batches, completed = discovery_runtime([]) do |emit|
+      4.times { |id| emit.call(id) }
+      raise IOError, "partial enumeration"
+    end
+    Async { assert_raises(IOError) { runtime.send(:perform_discovery) } }.wait
+    assert_equal [[0, 1, 2]], batches
+    assert_empty completed
+    started = Async::Queue.new
+    runtime, batches, completed = discovery_runtime([]) do |emit|
+      4.times { |id| emit.call(id) }
+      started.push(true)
+      Kernel.sleep(60)
+    end
+    Async do |root|
+      task = root.async { runtime.send(:perform_discovery) }
+      started.pop
+      task.stop
+    end.wait
+    assert_equal [[0, 1, 2]], batches
+    assert_empty completed
+  end
+
+  def test_paged_discovery_materializes_lazy_pages_with_a_bounded_limit
+    runtime, batches, completed, program = discovery_runtime([])
+    cursors = []
+    program.tenants_page do |cursor, limit|
+      cursors << [cursor, limit]
+      [((cursor || 0)...[(cursor || 0) + limit, 7].min).lazy, cursor == 6 ? nil : (cursor || 0) + limit]
+    end
+    runtime = Acp::Runtime.new(configuration: program.configuration,
+                               ownership: runtime.instance_variable_get(:@ownership), progress: coordinator)
+    Async { runtime.send(:perform_discovery) }.wait
+    assert_equal [[nil, 3], [3, 3], [6, 3]], cursors
+    assert_equal [[0, 1, 2], [3, 4, 5], [6]], batches
+    assert_equal [true], completed
+    assert_raises(ArgumentError) { Acp::DiscoveryPage.materialize([(1..4).lazy, nil], 3) }
+  end
+
+  def test_failed_final_chunk_cannot_complete_discovery_or_report_success
+    runtime, batches, completed = discovery_runtime([1, 2, 3, 4])
+    ownership = runtime.instance_variable_get(:@ownership)
+    ownership.define_singleton_method(:register_discovered_tenants) do |batch, *|
+      raise Acp::LeaseLostError, "expired before final registration" if batch.length == 1
+
+      batches << batch.dup
+    end
+    Async { assert_raises(Acp::LeaseLostError) { runtime.send(:perform_discovery) } }.wait
+    assert_equal [[1, 2, 3]], batches
+    assert_empty completed
+    assert_equal 0, runtime.metrics[:discovery_successes]
+    assert_equal 1, runtime.metrics[:discovery_failures]
+  end
+
+  def test_discovery_batch_limit_is_validated
+    runtime, _, _, program = discovery_runtime([])
+    assert_equal 3, runtime.instance_variable_get(:@configuration).discovery_batch_size
+    [0, 1025, 1.5, nil].each do |limit|
+      program.discovery_batch_size limit
+      assert_raises(Acp::ConfigurationError) { program.configuration }
+    end
+  end
+  # rubocop:enable Metrics/MethodLength, Metrics/AbcSize, Metrics/BlockLength
 
   class FakeWorkerRegistry
     def initialize

@@ -2,6 +2,7 @@
 
 require "active_record"
 require "pg"
+require_relative "discovery_page"
 
 module Acp
   # Explicit Rails 8 integration. Requiring acp alone never loads Rails.
@@ -36,7 +37,8 @@ module Acp
           settings: settings_for(configuration),
           callbacks: callbacks,
           fetch_retry: configuration.fetch_retry,
-          ingest_retry: selected_retry
+          ingest_retry: selected_retry,
+          acknowledge_retry: configuration.acknowledge_retry
         )
       end
 
@@ -72,13 +74,20 @@ module Acp
       end
 
       def validate_pool_budget!(configuration, pool)
-        concurrent_ingests = [configuration.ingest_concurrency, configuration.pipeline_capacity].min
-        required = configuration.effective_resolve_concurrency + concurrent_ingests + 1
+        # Initial cursor/resolve and ingest share pipeline reservations; parked
+        # retries hold no checkout. Discovery adds at most one (sequential pages).
+        # See benchmark/rails-connection-budget-proof.md before changing these scopes.
+        pipeline = configuration.pipeline_capacity
+        resolve = configuration.resolve_concurrency
+        ingest = configuration.ingest_concurrency
+        required = [pipeline, resolve + ingest].min + 1
         return if pool.size >= required
 
         raise ConfigurationError,
               "transaction pool size #{pool.size} is below the required #{required} " \
-              "(effective resolve_concurrency + effective ingest_concurrency + discovery)"
+              "Acp connections: min(pipeline_capacity=#{pipeline}, " \
+              "resolve_concurrency=#{resolve} + ingest_concurrency=#{ingest}) + 1 discovery; " \
+              "add application headroom for other users of this pool"
       end
 
       def validate_postgres!(pool)
@@ -94,15 +103,7 @@ module Acp
       end
 
       def settings_for(configuration)
-        {
-          interval: configuration.interval,
-          fetch_concurrency: configuration.fetch_concurrency,
-          ingest_concurrency: configuration.ingest_concurrency,
-          pipeline_capacity: configuration.pipeline_capacity,
-          resolve_concurrency: configuration.resolve_concurrency,
-          discovery_interval: configuration.discovery_interval,
-          retry_cooldown: configuration.retry_cooldown
-        }
+        Program::SETTING_NAMES.to_h { |name| [name, configuration.public_send(name)] }
       end
 
       def wrap_callback(name, callback, application, pool)
@@ -112,6 +113,8 @@ module Acp
               pool.with_connection(prevent_permanent_checkout: true) do |connection|
                 if name == :ingest
                   transactional_ingest(connection, callback, arguments)
+                elsif name == :tenants_page
+                  DiscoveryPage.materialize(callback.call(*arguments), arguments.last)
                 else
                   callback.call(*arguments)
                 end
@@ -124,7 +127,7 @@ module Acp
       end
 
       def database_callback?(name)
-        %i[tenants initial_cursor resolve ingest].include?(name)
+        %i[tenants tenants_page initial_cursor resolve ingest].include?(name)
       end
 
       def transactional_ingest(connection, callback, arguments)

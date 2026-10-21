@@ -1,0 +1,3227 @@
+{
+  "benchmark": "redis-postgresql-multi-process",
+  "workload": {
+    "seed": 20261001,
+    "tail": {
+      "tail_probability": 0.05,
+      "tail_multiplier": 5.0
+    },
+    "resolve_delay": 0.0,
+    "ingest_delay": 0.02,
+    "acknowledge_delay": 0.05,
+    "max_batch_bytes": 65536,
+    "max_response_bytes": 65536,
+    "retained_byte_capacity": 268435456,
+    "target_utilization": 0.75
+  },
+  "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+  "platform": "x86_64-pc-linux",
+  "os_release": "Ubuntu 24.04.4 LTS",
+  "available_processors": 8,
+  "cgroup_cpu_limit": null,
+  "cgroup_memory_limit_bytes": null,
+  "redis_server": "7.4.11",
+  "postgres_server": "17.11 (Debian 17.11-1.pgdg13+2)",
+  "dependencies": {
+    "async": "2.37.0",
+    "redis": "5.4.1",
+    "rails": "8.1.4",
+    "pg": "1.6.3"
+  },
+  "configured_latency_seconds": [
+    1.0,
+    19.0
+  ],
+  "payload_bytes_per_record": 4096,
+  "latency_distribution_method": "seeded per tenant/attempt, histogram bucket upper bounds",
+  "pressure_histogram_boundaries_seconds": [
+    0.0,
+    0.001,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2,
+    5,
+    10,
+    30,
+    60,
+    300
+  ],
+  "pressure_metrics_lifetime": "worker lifetime, including startup and drain; final and sampled worker snapshots",
+  "results": [
+    {
+      "worker_count": 1,
+      "tenant_count": 30000,
+      "duration_seconds": 171.065,
+      "completed_cycles": 36099,
+      "throughput_cycles_per_second": 225.62,
+      "measurement_duration_seconds": 160.0,
+      "drain_completed_cycles": 1935,
+      "post_warmup_windows": [
+        {
+          "duration_seconds": 60.0,
+          "completed_cycles": 13159,
+          "throughput_cycles_per_second": 219.31666666666666,
+          "mean_rss_megabytes": 417.4462890625
+        },
+        {
+          "duration_seconds": 60.0,
+          "completed_cycles": 14466,
+          "throughput_cycles_per_second": 241.1,
+          "mean_rss_megabytes": 454.6142578125
+        }
+      ],
+      "rss_growth_fraction": 0.08903652930649297,
+      "healthy_tenants_progressed": 29809,
+      "release_gates": {
+        "full_workload": true,
+        "throughput": false,
+        "healthy_tenant_coverage": false,
+        "rss_growth": true,
+        "reservation_limits": true,
+        "released": true
+      },
+      "release_passed": false,
+      "destination_rows": 29877,
+      "initial_worker_rss_megabytes": 112.36,
+      "ending_worker_rss_megabytes": 466.46,
+      "peak_worker_rss_megabytes": 466.46,
+      "capacities_per_worker": {
+        "fetch": 3500,
+        "resolve": 16,
+        "ingest": 16,
+        "pipeline": 4500,
+        "retained_bytes": 268435456
+      },
+      "fleet_connection_budgets": {
+        "postgres": 37,
+        "redis": 24,
+        "http_equivalent_requests": 3500,
+        "http_actual": 0
+      },
+      "workers": [
+        {
+          "worker_id": "bench-1-1",
+          "metrics": {
+            "active_cycles": 0,
+            "max_active_cycles": 4500,
+            "active_fetches": 0,
+            "max_active_fetches": 3390,
+            "queued_batches": 0,
+            "max_queued_batches": 197,
+            "active_ingests": 0,
+            "max_active_ingests": 16,
+            "assigned_tenants": 30000,
+            "discovered_tenants": 30000,
+            "pipeline_utilization": 0.0,
+            "queue_wait": 0.004811426973901689,
+            "ingestion_duration": 0.0244637819705531,
+            "cursor_update_delay": 0.052604552009142935,
+            "retry_count": 0,
+            "completed_cycles": 38034,
+            "ownership_acquisitions": 39057,
+            "ownership_skips": 0,
+            "polling_lag": 69.37580154906027,
+            "polling_lag_p50": 60,
+            "polling_lag_p95": 300,
+            "polling_lag_p99": 300,
+            "renewal_deadline_misses": 0,
+            "discovery_successes": 3,
+            "discovery_failures": 0,
+            "pipeline_reservations": 0,
+            "max_pipeline_reservations": 4500,
+            "retry_reservations": 0,
+            "max_retry_reservations": 0,
+            "parked_cycles": 0,
+            "max_parked_cycles": 0,
+            "upstream_groups": 0,
+            "max_upstream_groups": 0,
+            "reserved_bytes": 0,
+            "max_reserved_bytes": 224067584,
+            "retained_bytes": 0,
+            "max_retained_bytes": 1298432,
+            "byte_budget_waits": 0,
+            "byte_budget_waiters": 0,
+            "max_byte_budget_waiters": 1,
+            "oversized_batches": 0,
+            "estimate_overflows": 0,
+            "active_resolves": 0,
+            "max_active_resolves": 11,
+            "pending_acknowledgements": 0,
+            "max_pending_acknowledgements": 35,
+            "retained_batches": 0,
+            "max_retained_batches": 232,
+            "retry_overflows": 0,
+            "payload_rejections": 0,
+            "overdue_tenants": 0,
+            "oldest_overdue_age": 0.0,
+            "pressure": {
+              "admission_lag": {
+                "count": 39057,
+                "sum": 1513242.4793169873,
+                "min": 0.3372377675259486,
+                "max": 72.28310785198119,
+                "last": 69.37580154906027,
+                "outcomes": {
+                  "success": 39057,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 60,
+                "p95": 300,
+                "p99": 300
+              },
+              "cycle_duration": {
+                "count": 39057,
+                "sum": 460524.93627936696,
+                "min": 1.1015116979833692,
+                "max": 94.88423309801146,
+                "last": 10.894558734027669,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 1023
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 300
+              },
+              "cycle_overrun": {
+                "count": 39057,
+                "sum": 8245.454306564294,
+                "min": 0,
+                "max": 34.88423793902621,
+                "last": 0,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 1023
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 10
+              },
+              "resolve_wait": {
+                "count": 69057,
+                "sum": 0.08905434899497777,
+                "min": 0.0000006760237738490105,
+                "max": 0.000051807030104100704,
+                "last": 0.0000009600771591067314,
+                "outcomes": {
+                  "success": 69057,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.001,
+                "p99": 0.001
+              },
+              "resolve_service": {
+                "count": 69057,
+                "sum": 95.8162243377883,
+                "min": 0.00007785903289914131,
+                "max": 0.07706203800626099,
+                "last": 0.0033032780047506094,
+                "outcomes": {
+                  "success": 69057,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.005,
+                "p99": 0.01
+              },
+              "fetch_wait": {
+                "count": 39057,
+                "sum": 0.051613100338727236,
+                "min": 0.0000006969785317778587,
+                "max": 0.00017965002916753292,
+                "last": 0.0000009700888767838478,
+                "outcomes": {
+                  "success": 39057,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.001,
+                "p99": 0.001
+              },
+              "fetch_service": {
+                "count": 39057,
+                "sum": 453183.27718955756,
+                "min": 1.0054082189453766,
+                "max": 94.76193763606716,
+                "last": 10.509571781032719,
+                "outcomes": {
+                  "success": 38101,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 956
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 300
+              },
+              "ingest_wait": {
+                "count": 38101,
+                "sum": 2244.749120609951,
+                "min": 0.00003324798308312893,
+                "max": 0.8762162170605734,
+                "last": 0.16659162810537964,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 67
+                },
+                "p50": 0.005,
+                "p95": 0.5,
+                "p99": 1
+              },
+              "ingest_service": {
+                "count": 38034,
+                "sum": 1559.6508576472988,
+                "min": 0.02205137105192989,
+                "max": 0.564594809897244,
+                "last": 0.02444518089760095,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.05,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "acknowledge_wait": {
+                "count": 38034,
+                "sum": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "acknowledge_service": {
+                "count": 38034,
+                "sum": 2278.1685173917795,
+                "min": 0.050222837016917765,
+                "max": 0.5899449699791148,
+                "last": 0.05259209300857037,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.1,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "cursor_read_service": {
+                "count": 39057,
+                "sum": 189.35740384808742,
+                "min": 0.00021095899865031242,
+                "max": 0.4806795069016516,
+                "last": 0.03831125202123076,
+                "outcomes": {
+                  "success": 39057,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.025,
+                "p99": 0.025
+              },
+              "cursor_initialize_service": {
+                "count": 30000,
+                "sum": 109.68366495298687,
+                "min": 0.00026947096921503544,
+                "max": 0.47870189289096743,
+                "last": 0.010984220076352358,
+                "outcomes": {
+                  "success": 30000,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.01,
+                "p99": 0.025
+              },
+              "cursor_update_delay": {
+                "count": 38034,
+                "sum": 2278.532560315798,
+                "min": 0.05023112299386412,
+                "max": 0.5899539560778067,
+                "last": 0.0526005569845438,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.1,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "reactor_lag": {
+                "count": 1625,
+                "sum": 10.072847821749747,
+                "min": 0.000027673086151480675,
+                "max": 0.4378781389677897,
+                "last": 0.0004436920862644911,
+                "outcomes": {
+                  "success": 1625,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.025,
+                "p99": 0.1
+              },
+              "renewal_wakeup_lag": {
+                "count": 132227,
+                "sum": 993.7945855786093,
+                "min": 0.00001363398041576147,
+                "max": 0.4812339280033484,
+                "last": 0.0003634430468082428,
+                "outcomes": {
+                  "success": 132227,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.05,
+                "p99": 0.1
+              },
+              "renewal_service": {
+                "count": 132227,
+                "sum": 4320.980636067456,
+                "min": 0.00015171105042099953,
+                "max": 0.7810428510420024,
+                "last": 0.0003716140054166317,
+                "outcomes": {
+                  "success": 131849,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 378
+                },
+                "p50": 0.005,
+                "p95": 0.25,
+                "p99": 1
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "pipeline_residence": {
+                "count": 39057,
+                "sum": 482277.60081637325,
+                "min": 1.1043423040537164,
+                "max": 96.85136923601385,
+                "last": 10.895054140943103,
+                "outcomes": {
+                  "success": 38034,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 1023
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 300
+              }
+            },
+            "redis": {
+              "renewal_successes": 131849,
+              "renewal_failures": 0,
+              "renewal_deadline_misses": 0,
+              "pressure": {
+                "commands_checkout": {
+                  "count": 263707,
+                  "sum": 14.353446216089651,
+                  "min": 0.0000006440095603466034,
+                  "max": 0.05121953797060996,
+                  "last": 0.0000013200333341956139,
+                  "buckets": [
+                    0,
+                    258788,
+                    4623,
+                    269,
+                    22,
+                    3,
+                    2,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 263707,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 0
+                  },
+                  "p50": 0.001,
+                  "p95": 0.001,
+                  "p99": 0.005
+                },
+                "commands_service": {
+                  "count": 263707,
+                  "sum": 927.9454800150124,
+                  "min": 0.00008206500206142664,
+                  "max": 0.4806388510623947,
+                  "last": 0.00032533297780901194,
+                  "buckets": [
+                    0,
+                    20680,
+                    197181,
+                    38926,
+                    5632,
+                    676,
+                    589,
+                    1,
+                    22,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 262681,
+                    "error": 0,
+                    "timeout": 1026,
+                    "cancelled": 0
+                  },
+                  "p50": 0.005,
+                  "p95": 0.01,
+                  "p99": 0.025
+                },
+                "renewal_checkout": {
+                  "count": 132456,
+                  "sum": 3462.2518370006,
+                  "min": 0.0000007629860192537308,
+                  "max": 0.7614905390655622,
+                  "last": 0.0000010629883036017418,
+                  "buckets": [
+                    0,
+                    86636,
+                    10248,
+                    4786,
+                    9392,
+                    7556,
+                    4504,
+                    5301,
+                    2605,
+                    1428,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 132149,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 307
+                  },
+                  "p50": 0.001,
+                  "p95": 0.25,
+                  "p99": 1
+                },
+                "renewal_service": {
+                  "count": 132149,
+                  "sum": 615.5195918719983,
+                  "min": 0.0001342470059171319,
+                  "max": 0.47820909100119025,
+                  "last": 0.0003411599900573492,
+                  "buckets": [
+                    0,
+                    4519,
+                    85392,
+                    35982,
+                    5326,
+                    471,
+                    444,
+                    0,
+                    15,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 132111,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 38
+                  },
+                  "p50": 0.005,
+                  "p95": 0.01,
+                  "p99": 0.025
+                },
+                "lease_renewal_slack": {
+                  "count": 132227,
+                  "sum": 787297.7800024207,
+                  "min": 5.20101966499351,
+                  "max": 5.999500403995626,
+                  "last": 5.990172934019938,
+                  "buckets": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    132227,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 131849,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 378
+                  },
+                  "p50": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              }
+            }
+          },
+          "stage_residence_seconds": {
+            "admission_lag": {
+              "mean": 38.74446269086175,
+              "count": 39057,
+              "p95_bucket_upper_bound": 300
+            },
+            "cycle_duration": {
+              "mean": 11.791098555428398,
+              "count": 39057,
+              "p95_bucket_upper_bound": 30
+            },
+            "cycle_overrun": {
+              "mean": 0.21111335500843112,
+              "count": 39057,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "resolve_wait": {
+              "mean": 0.000001289577435958379,
+              "count": 69057,
+              "p95_bucket_upper_bound": 0.001
+            },
+            "resolve_service": {
+              "mean": 0.0013874947411238296,
+              "count": 69057,
+              "p95_bucket_upper_bound": 0.005
+            },
+            "fetch_wait": {
+              "mean": 0.0000013214814332572198,
+              "count": 39057,
+              "p95_bucket_upper_bound": 0.001
+            },
+            "fetch_service": {
+              "mean": 11.603125616139426,
+              "count": 39057,
+              "p95_bucket_upper_bound": 30
+            },
+            "ingest_wait": {
+              "mean": 0.058915753408308215,
+              "count": 38101,
+              "p95_bucket_upper_bound": 0.5
+            },
+            "ingest_service": {
+              "mean": 0.041006753369282715,
+              "count": 38034,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "acknowledge_wait": {
+              "mean": 0.0,
+              "count": 38034,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "acknowledge_service": {
+              "mean": 0.059898209954035324,
+              "count": 38034,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "cursor_read_service": {
+              "mean": 0.004848232169600518,
+              "count": 39057,
+              "p95_bucket_upper_bound": 0.025
+            },
+            "cursor_initialize_service": {
+              "mean": 0.0036561221650995624,
+              "count": 30000,
+              "p95_bucket_upper_bound": 0.01
+            },
+            "cursor_update_delay": {
+              "mean": 0.0599077814669979,
+              "count": 38034,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "fetch_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "ingest_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "acknowledge_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "reactor_lag": {
+              "mean": 0.0061986755826152285,
+              "count": 1625,
+              "p95_bucket_upper_bound": 0.025
+            },
+            "renewal_wakeup_lag": {
+              "mean": 0.007515821924256085,
+              "count": 132227,
+              "p95_bucket_upper_bound": 0.05
+            },
+            "renewal_service": {
+              "mean": 0.032678504662946715,
+              "count": 132227,
+              "p95_bucket_upper_bound": 0.25
+            },
+            "retry_admission_wait": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "byte_budget_wait": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "pipeline_residence": {
+              "mean": 12.348045185661297,
+              "count": 39057,
+              "p95_bucket_upper_bound": 30
+            }
+          },
+          "benchmark_completed_cycles": 38034,
+          "measurement_completed_cycles": 36099,
+          "baseline_completed_cycles": 0,
+          "upstream_fetches": 38101,
+          "payload_bytes": 186634240,
+          "startup_discovery_seconds": 0.7294270230922848,
+          "elapsed_seconds": 170.90219838009216,
+          "latency_seconds": {
+            "p50_bucket_upper_bound": 30,
+            "p95_bucket_upper_bound": 30,
+            "p99_bucket_upper_bound": 120
+          },
+          "samples": [
+            {
+              "at_seconds": 0,
+              "actual_at_seconds": 0.015064191073179245,
+              "completed_cycles": 0,
+              "active_cycles": 116,
+              "queued_batches": 0,
+              "overdue_tenants": 572,
+              "oldest_overdue_age": 1.1238591826986521,
+              "retained_bytes": 0,
+              "reserved_bytes": 7602176,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 4,
+                "busy": 1,
+                "dead": 0,
+                "idle": 3,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 111.34375
+            },
+            {
+              "at_seconds": 40.0,
+              "actual_at_seconds": 40.01278271805495,
+              "completed_cycles": 8474,
+              "active_cycles": 2840,
+              "queued_batches": 0,
+              "overdue_tenants": 9538,
+              "oldest_overdue_age": 18.810947583871894,
+              "retained_bytes": 136192,
+              "reserved_bytes": 186122240,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 20,
+                "busy": 10,
+                "dead": 0,
+                "idle": 10,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 374.02734375
+            },
+            {
+              "at_seconds": 100.0,
+              "actual_at_seconds": 100.0096143350238,
+              "completed_cycles": 21633,
+              "active_cycles": 2861,
+              "queued_batches": 0,
+              "overdue_tenants": 16640,
+              "oldest_overdue_age": 52.415135888848454,
+              "retained_bytes": 108544,
+              "reserved_bytes": 187498496,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 21,
+                "busy": 9,
+                "dead": 0,
+                "idle": 12,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 441.4296875
+            },
+            {
+              "at_seconds": 160.0,
+              "actual_at_seconds": 160.01448355906177,
+              "completed_cycles": 36099,
+              "active_cycles": 3095,
+              "queued_batches": 0,
+              "overdue_tenants": 15109,
+              "oldest_overdue_age": 69.37858881999273,
+              "retained_bytes": 99328,
+              "reserved_bytes": 193855488,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 26,
+                "busy": 7,
+                "dead": 0,
+                "idle": 19,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 466.4765625
+            }
+          ],
+          "tenant_coverage": {
+            "count": 29809,
+            "minimum_cycles": 1,
+            "maximum_cycles": 2
+          },
+          "sample_count": 33,
+          "sampled_postgres_peak_busy": 19,
+          "post_warmup_stage_residence_seconds": [
+            {
+              "admission_lag": {
+                "count": 13179,
+                "mean": 36.67298603361443
+              },
+              "cycle_duration": {
+                "count": 13159,
+                "mean": 11.844747180952943
+              },
+              "cycle_overrun": {
+                "count": 13159,
+                "mean": 0.175709489847494
+              },
+              "resolve_wait": {
+                "count": 26358,
+                "mean": 0.0000012903202909381793
+              },
+              "resolve_service": {
+                "count": 26358,
+                "mean": 0.0013819191911963345
+              },
+              "fetch_wait": {
+                "count": 13179,
+                "mean": 0.000001340912716759021
+              },
+              "fetch_service": {
+                "count": 13152,
+                "mean": 11.664230677267168
+              },
+              "ingest_wait": {
+                "count": 13152,
+                "mean": 0.04108335151757853
+              },
+              "ingest_service": {
+                "count": 13153,
+                "mean": 0.04240708625678393
+              },
+              "acknowledge_wait": {
+                "count": 13152,
+                "mean": 0.0
+              },
+              "acknowledge_service": {
+                "count": 13159,
+                "mean": 0.061400922270389735
+              },
+              "cursor_read_service": {
+                "count": 13179,
+                "mean": 0.0053897224985815255
+              },
+              "cursor_initialize_service": {
+                "count": 13179,
+                "mean": 0.00411908640886461
+              },
+              "cursor_update_delay": {
+                "count": 13159,
+                "mean": 0.06141071002408794
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "reactor_lag": {
+                "count": 560,
+                "mean": 0.0072135707577607325
+              },
+              "renewal_wakeup_lag": {
+                "count": 46224,
+                "mean": 0.00921007602350575
+              },
+              "renewal_service": {
+                "count": 46213,
+                "mean": 0.029809608038209458
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "pipeline_residence": {
+                "count": 13158,
+                "mean": 13.083396277073255
+              }
+            },
+            {
+              "admission_lag": {
+                "count": 14564,
+                "mean": 65.02352188157025
+              },
+              "cycle_duration": {
+                "count": 14466,
+                "mean": 11.999519933573291
+              },
+              "cycle_overrun": {
+                "count": 14466,
+                "mean": 0.29923859144333476
+              },
+              "resolve_wait": {
+                "count": 20073,
+                "mean": 0.0000013230367833833366
+              },
+              "resolve_service": {
+                "count": 20074,
+                "mean": 0.0016960557049769537
+              },
+              "fetch_wait": {
+                "count": 14565,
+                "mean": 0.0000013159864290863266
+              },
+              "fetch_service": {
+                "count": 14465,
+                "mean": 11.79969785357386
+              },
+              "ingest_wait": {
+                "count": 14465,
+                "mean": 0.07118766424771672
+              },
+              "ingest_service": {
+                "count": 14466,
+                "mean": 0.04088772462951686
+              },
+              "acknowledge_wait": {
+                "count": 14464,
+                "mean": 0.0
+              },
+              "acknowledge_service": {
+                "count": 14466,
+                "mean": 0.05964181241164424
+              },
+              "cursor_read_service": {
+                "count": 14563,
+                "mean": 0.004817442965849749
+              },
+              "cursor_initialize_service": {
+                "count": 5510,
+                "mean": 0.0036827604792811003
+              },
+              "cursor_update_delay": {
+                "count": 14466,
+                "mean": 0.05965107896892949
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "reactor_lag": {
+                "count": 565,
+                "mean": 0.006226111680013746
+              },
+              "renewal_wakeup_lag": {
+                "count": 50005,
+                "mean": 0.006677569094049378
+              },
+              "renewal_service": {
+                "count": 50002,
+                "mean": 0.046860421697442256
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "pipeline_residence": {
+                "count": 14330,
+                "mean": 12.368857406054293
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "worker_count": 2,
+      "tenant_count": 30000,
+      "duration_seconds": 171.222,
+      "completed_cycles": 60153,
+      "throughput_cycles_per_second": 375.96,
+      "measurement_duration_seconds": 160.0,
+      "drain_completed_cycles": 4002,
+      "post_warmup_windows": [
+        {
+          "duration_seconds": 60.0,
+          "completed_cycles": 23363,
+          "throughput_cycles_per_second": 389.3833333333333,
+          "mean_rss_megabytes": 756.9733072916666
+        },
+        {
+          "duration_seconds": 60.0,
+          "completed_cycles": 23589,
+          "throughput_cycles_per_second": 393.15,
+          "mean_rss_megabytes": 848.8590494791667
+        }
+      ],
+      "rss_growth_fraction": 0.12138570977654828,
+      "healthy_tenants_progressed": 29992,
+      "release_gates": {
+        "full_workload": true,
+        "throughput": false,
+        "healthy_tenant_coverage": false,
+        "rss_growth": false,
+        "reservation_limits": true,
+        "released": true
+      },
+      "release_passed": false,
+      "destination_rows": 30000,
+      "initial_worker_rss_megabytes": 277.41,
+      "ending_worker_rss_megabytes": 866.09,
+      "peak_worker_rss_megabytes": 866.09,
+      "capacities_per_worker": {
+        "fetch": 3500,
+        "resolve": 16,
+        "ingest": 16,
+        "pipeline": 4500,
+        "retained_bytes": 268435456
+      },
+      "fleet_connection_budgets": {
+        "postgres": 74,
+        "redis": 48,
+        "http_equivalent_requests": 7000,
+        "http_actual": 0
+      },
+      "workers": [
+        {
+          "worker_id": "bench-2-1",
+          "metrics": {
+            "active_cycles": 0,
+            "max_active_cycles": 4500,
+            "active_fetches": 0,
+            "max_active_fetches": 2995,
+            "queued_batches": 0,
+            "max_queued_batches": 148,
+            "active_ingests": 0,
+            "max_active_ingests": 16,
+            "assigned_tenants": 14914,
+            "discovered_tenants": 30000,
+            "pipeline_utilization": 0.0,
+            "queue_wait": 0.0017523439601063728,
+            "ingestion_duration": 0.024220596998929977,
+            "cursor_update_delay": 0.0519054071046412,
+            "retry_count": 0,
+            "completed_cycles": 32223,
+            "ownership_acquisitions": 33141,
+            "ownership_skips": 6899,
+            "polling_lag": 10.361830107984133,
+            "polling_lag_p50": 30,
+            "polling_lag_p95": 30,
+            "polling_lag_p99": 30,
+            "renewal_deadline_misses": 0,
+            "discovery_successes": 3,
+            "discovery_failures": 0,
+            "pipeline_reservations": 0,
+            "max_pipeline_reservations": 4500,
+            "retry_reservations": 0,
+            "max_retry_reservations": 0,
+            "parked_cycles": 0,
+            "max_parked_cycles": 0,
+            "upstream_groups": 0,
+            "max_upstream_groups": 0,
+            "reserved_bytes": 0,
+            "max_reserved_bytes": 198115328,
+            "retained_bytes": 0,
+            "max_retained_bytes": 1035264,
+            "byte_budget_waits": 0,
+            "byte_budget_waiters": 0,
+            "max_byte_budget_waiters": 1,
+            "oversized_batches": 0,
+            "estimate_overflows": 0,
+            "active_resolves": 0,
+            "max_active_resolves": 13,
+            "pending_acknowledgements": 0,
+            "max_pending_acknowledgements": 32,
+            "retained_batches": 0,
+            "max_retained_batches": 182,
+            "retry_overflows": 0,
+            "payload_rejections": 0,
+            "overdue_tenants": 0,
+            "oldest_overdue_age": 0.0,
+            "pressure": {
+              "admission_lag": {
+                "count": 40040,
+                "sum": 390014.96569137985,
+                "min": 0.00006484822370111942,
+                "max": 54.25872044696007,
+                "last": 10.361830107984133,
+                "outcomes": {
+                  "success": 40040,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 30
+              },
+              "cycle_duration": {
+                "count": 40040,
+                "sum": 392196.7159627769,
+                "min": 0.00022341904696077108,
+                "max": 94.90183299605269,
+                "last": 10.921499719959684,
+                "outcomes": {
+                  "success": 39122,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 918
+                },
+                "p50": 10,
+                "p95": 30,
+                "p99": 300
+              },
+              "cycle_overrun": {
+                "count": 40040,
+                "sum": 7214.5471207704395,
+                "min": 0,
+                "max": 34.90183559304569,
+                "last": 0,
+                "outcomes": {
+                  "success": 39122,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 918
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 5
+              },
+              "resolve_wait": {
+                "count": 48352,
+                "sum": 0.07296695443801582,
+                "min": 0.0000006740447133779526,
+                "max": 0.00021367892622947693,
+                "last": 0.0000020390143617987633,
+                "outcomes": {
+                  "success": 48352,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.001,
+                "p99": 0.001
+              },
+              "resolve_service": {
+                "count": 48352,
+                "sum": 83.44910745788366,
+                "min": 0.0000832270598039031,
+                "max": 0.06763090193271637,
+                "last": 0.006088368012569845,
+                "outcomes": {
+                  "success": 48352,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.01,
+                "p99": 0.01
+              },
+              "fetch_wait": {
+                "count": 33141,
+                "sum": 0.05232149641960859,
+                "min": 0.000000693020410835743,
+                "max": 0.0002934610238298774,
+                "last": 0.0000020849984139204025,
+                "outcomes": {
+                  "success": 33141,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.001,
+                "p99": 0.001
+              },
+              "fetch_service": {
+                "count": 33141,
+                "sum": 385714.02262355597,
+                "min": 1.0017768780235201,
+                "max": 94.8031619549729,
+                "last": 10.55849283898715,
+                "outcomes": {
+                  "success": 32282,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 859
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 300
+              },
+              "ingest_wait": {
+                "count": 32282,
+                "sum": 1804.6215165338945,
+                "min": 0.00003560201730579138,
+                "max": 0.7981405520113185,
+                "last": 0.7310764329740778,
+                "outcomes": {
+                  "success": 32223,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 59
+                },
+                "p50": 0.005,
+                "p95": 0.5,
+                "p99": 1
+              },
+              "ingest_service": {
+                "count": 32223,
+                "sum": 1427.4137879098998,
+                "min": 0.022062818985432386,
+                "max": 0.4768333570100367,
+                "last": 0.024190947995521128,
+                "outcomes": {
+                  "success": 32223,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.05,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "acknowledge_wait": {
+                "count": 32223,
+                "sum": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 32223,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "acknowledge_service": {
+                "count": 32223,
+                "sum": 1988.7782449090155,
+                "min": 0.050282398937270045,
+                "max": 0.39899736794177443,
+                "last": 0.0518904299242422,
+                "outcomes": {
+                  "success": 32223,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.1,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "cursor_read_service": {
+                "count": 33141,
+                "sum": 175.44222836662084,
+                "min": 0.00016504002269357443,
+                "max": 0.2949089470785111,
+                "last": 0.07944945897907019,
+                "outcomes": {
+                  "success": 33141,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.025,
+                "p99": 0.05
+              },
+              "cursor_initialize_service": {
+                "count": 15211,
+                "sum": 54.611101828399114,
+                "min": 0.0002153989626094699,
+                "max": 0.2013665089616552,
+                "last": 0.0013648060848936439,
+                "outcomes": {
+                  "success": 15211,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.01,
+                "p99": 0.025
+              },
+              "cursor_update_delay": {
+                "count": 32223,
+                "sum": 1989.1521267207572,
+                "min": 0.050292442087084055,
+                "max": 0.39900685101747513,
+                "last": 0.05190145305823535,
+                "outcomes": {
+                  "success": 32223,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.1,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "reactor_lag": {
+                "count": 1637,
+                "sum": 10.890013453084975,
+                "min": 0.000016591046005487442,
+                "max": 0.2909409840358421,
+                "last": 0.0004928499693050981,
+                "outcomes": {
+                  "success": 1637,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.05,
+                "p99": 0.1
+              },
+              "renewal_wakeup_lag": {
+                "count": 111398,
+                "sum": 875.84835860983,
+                "min": 0.000014443066902458668,
+                "max": 0.2929260079981759,
+                "last": 0.0003217479679733515,
+                "outcomes": {
+                  "success": 111398,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.05,
+                "p99": 0.1
+              },
+              "renewal_service": {
+                "count": 111398,
+                "sum": 7693.131701299804,
+                "min": 0.00015973206609487534,
+                "max": 1.095394886098802,
+                "last": 0.0004926299443468451,
+                "outcomes": {
+                  "success": 110698,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 700
+                },
+                "p50": 0.005,
+                "p95": 1,
+                "p99": 1
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "pipeline_residence": {
+                "count": 40040,
+                "sum": 417889.32811389095,
+                "min": 0.00023200700525194407,
+                "max": 102.0216270670062,
+                "last": 10.922047449974343,
+                "outcomes": {
+                  "success": 39122,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 918
+                },
+                "p50": 10,
+                "p95": 30,
+                "p99": 300
+              }
+            },
+            "redis": {
+              "renewal_successes": 110698,
+              "renewal_failures": 0,
+              "renewal_deadline_misses": 0,
+              "pressure": {
+                "commands_checkout": {
+                  "count": 221239,
+                  "sum": 22.334368280135095,
+                  "min": 0.0000007060589268803596,
+                  "max": 0.05659176199696958,
+                  "last": 0.00000160199124366045,
+                  "buckets": [
+                    0,
+                    215137,
+                    5297,
+                    701,
+                    30,
+                    62,
+                    12,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 221239,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 0
+                  },
+                  "p50": 0.001,
+                  "p95": 0.001,
+                  "p99": 0.005
+                },
+                "commands_service": {
+                  "count": 221239,
+                  "sum": 882.2482498331228,
+                  "min": 0.0001269850181415677,
+                  "max": 0.29481975990347564,
+                  "last": 0.0003560760524123907,
+                  "buckets": [
+                    0,
+                    23297,
+                    148154,
+                    37391,
+                    10743,
+                    856,
+                    777,
+                    13,
+                    8,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 220321,
+                    "error": 0,
+                    "timeout": 918,
+                    "cancelled": 0
+                  },
+                  "p50": 0.005,
+                  "p95": 0.025,
+                  "p99": 0.025
+                },
+                "renewal_checkout": {
+                  "count": 111751,
+                  "sum": 6852.82831692521,
+                  "min": 0.0000008220085874199867,
+                  "max": 1.0716250649420545,
+                  "last": 0.0000017900019884109497,
+                  "buckets": [
+                    0,
+                    67430,
+                    6437,
+                    3928,
+                    8897,
+                    5587,
+                    5293,
+                    6020,
+                    2252,
+                    5674,
+                    233,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 111127,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 624
+                  },
+                  "p50": 0.001,
+                  "p95": 1,
+                  "p99": 1
+                },
+                "renewal_service": {
+                  "count": 111127,
+                  "sum": 633.0070859043626,
+                  "min": 0.00013957894407212734,
+                  "max": 0.2943862040992826,
+                  "last": 0.00045476399827748537,
+                  "buckets": [
+                    0,
+                    4292,
+                    59901,
+                    33849,
+                    11779,
+                    678,
+                    611,
+                    7,
+                    10,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 111078,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 49
+                  },
+                  "p50": 0.005,
+                  "p95": 0.025,
+                  "p99": 0.05
+                },
+                "lease_renewal_slack": {
+                  "count": 111398,
+                  "sum": 659017.3164378711,
+                  "min": 4.896520246984437,
+                  "max": 5.999504992039874,
+                  "last": 5.998222887981683,
+                  "buckets": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    380,
+                    111018,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 110698,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 700
+                  },
+                  "p50": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              }
+            }
+          },
+          "stage_residence_seconds": {
+            "admission_lag": {
+              "mean": 9.740633508775721,
+              "count": 40040,
+              "p95_bucket_upper_bound": 30
+            },
+            "cycle_duration": {
+              "mean": 9.79512277629313,
+              "count": 40040,
+              "p95_bucket_upper_bound": 30
+            },
+            "cycle_overrun": {
+              "mean": 0.18018349452473625,
+              "count": 40040,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "resolve_wait": {
+              "mean": 0.0000015090783098530736,
+              "count": 48352,
+              "p95_bucket_upper_bound": 0.001
+            },
+            "resolve_service": {
+              "mean": 0.001725866716121022,
+              "count": 48352,
+              "p95_bucket_upper_bound": 0.01
+            },
+            "fetch_wait": {
+              "mean": 0.0000015787543049276905,
+              "count": 33141,
+              "p95_bucket_upper_bound": 0.001
+            },
+            "fetch_service": {
+              "mean": 11.638575257945021,
+              "count": 33141,
+              "p95_bucket_upper_bound": 30
+            },
+            "ingest_wait": {
+              "mean": 0.05590178788593936,
+              "count": 32282,
+              "p95_bucket_upper_bound": 0.5
+            },
+            "ingest_service": {
+              "mean": 0.04429797932873723,
+              "count": 32223,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "acknowledge_wait": {
+              "mean": 0.0,
+              "count": 32223,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "acknowledge_service": {
+              "mean": 0.06171921437820859,
+              "count": 32223,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "cursor_read_service": {
+              "mean": 0.005293812147087319,
+              "count": 33141,
+              "p95_bucket_upper_bound": 0.025
+            },
+            "cursor_initialize_service": {
+              "mean": 0.0035902374484517202,
+              "count": 15211,
+              "p95_bucket_upper_bound": 0.01
+            },
+            "cursor_update_delay": {
+              "mean": 0.06173081732677768,
+              "count": 32223,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "fetch_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "ingest_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "acknowledge_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "reactor_lag": {
+              "mean": 0.006652421168653009,
+              "count": 1637,
+              "p95_bucket_upper_bound": 0.05
+            },
+            "renewal_wakeup_lag": {
+              "mean": 0.007862334679346397,
+              "count": 111398,
+              "p95_bucket_upper_bound": 0.05
+            },
+            "renewal_service": {
+              "mean": 0.06905987272033433,
+              "count": 111398,
+              "p95_bucket_upper_bound": 1
+            },
+            "retry_admission_wait": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "byte_budget_wait": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "pipeline_residence": {
+              "mean": 10.436796406440832,
+              "count": 40040,
+              "p95_bucket_upper_bound": 30
+            }
+          },
+          "benchmark_completed_cycles": 32208,
+          "measurement_completed_cycles": 30168,
+          "baseline_completed_cycles": 15,
+          "upstream_fetches": 32264,
+          "payload_bytes": 158515200,
+          "startup_discovery_seconds": 0.7877742479322478,
+          "elapsed_seconds": 170.92794863996096,
+          "latency_seconds": {
+            "p50_bucket_upper_bound": 30,
+            "p95_bucket_upper_bound": 30,
+            "p99_bucket_upper_bound": 120
+          },
+          "samples": [
+            {
+              "at_seconds": 0,
+              "actual_at_seconds": 0.015137228998355567,
+              "completed_cycles": 0,
+              "active_cycles": 1074,
+              "queued_batches": 0,
+              "overdue_tenants": 76,
+              "oldest_overdue_age": 0.16567108873277903,
+              "retained_bytes": 13824,
+              "reserved_bytes": 70385664,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 7,
+                "busy": 0,
+                "dead": 0,
+                "idle": 7,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 168.18359375
+            },
+            {
+              "at_seconds": 40.0,
+              "actual_at_seconds": 40.00720117997844,
+              "completed_cycles": 6753,
+              "active_cycles": 2399,
+              "queued_batches": 1,
+              "overdue_tenants": 2018,
+              "oldest_overdue_age": 8.058268161257729,
+              "retained_bytes": 92160,
+              "reserved_bytes": 157220864,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 20,
+                "busy": 7,
+                "dead": 0,
+                "idle": 13,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 359.46484375
+            },
+            {
+              "at_seconds": 100.0,
+              "actual_at_seconds": 100.00606639089528,
+              "completed_cycles": 18198,
+              "active_cycles": 2793,
+              "queued_batches": 5,
+              "overdue_tenants": 2837,
+              "oldest_overdue_age": 14.214687615050934,
+              "retained_bytes": 152064,
+              "reserved_bytes": 183042048,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 22,
+                "busy": 7,
+                "dead": 0,
+                "idle": 15,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 419.6796875
+            },
+            {
+              "at_seconds": 160.0,
+              "actual_at_seconds": 160.00865175691433,
+              "completed_cycles": 30168,
+              "active_cycles": 3235,
+              "queued_batches": 29,
+              "overdue_tenants": 2078,
+              "oldest_overdue_age": 10.365088041988201,
+              "retained_bytes": 402432,
+              "reserved_bytes": 194052096,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 29,
+                "busy": 16,
+                "dead": 0,
+                "idle": 13,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 437.80078125
+            }
+          ],
+          "tenant_coverage": {
+            "count": 15199,
+            "minimum_cycles": 1,
+            "maximum_cycles": 3
+          },
+          "sample_count": 33,
+          "sampled_postgres_peak_busy": 20,
+          "post_warmup_stage_residence_seconds": [
+            {
+              "admission_lag": {
+                "count": 11839,
+                "mean": 14.377741577626841
+              },
+              "cycle_duration": {
+                "count": 11445,
+                "mean": 11.702830198560308
+              },
+              "cycle_overrun": {
+                "count": 11445,
+                "mean": 0.15290060422898752
+              },
+              "resolve_wait": {
+                "count": 17887,
+                "mean": 0.000001535235195316913
+              },
+              "resolve_service": {
+                "count": 17888,
+                "mean": 0.00191604762459229
+              },
+              "fetch_wait": {
+                "count": 11840,
+                "mean": 0.0000016030846332747339
+              },
+              "fetch_service": {
+                "count": 11458,
+                "mean": 11.48057469138378
+              },
+              "ingest_wait": {
+                "count": 11454,
+                "mean": 0.06601824759802592
+              },
+              "ingest_service": {
+                "count": 11453,
+                "mean": 0.04614316496333428
+              },
+              "acknowledge_wait": {
+                "count": 11453,
+                "mean": 0.0
+              },
+              "acknowledge_service": {
+                "count": 11445,
+                "mean": 0.06260895508503425
+              },
+              "cursor_read_service": {
+                "count": 11840,
+                "mean": 0.006001573957011616
+              },
+              "cursor_initialize_service": {
+                "count": 6047,
+                "mean": 0.005136944064111188
+              },
+              "cursor_update_delay": {
+                "count": 11445,
+                "mean": 0.06262051040784147
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "reactor_lag": {
+                "count": 558,
+                "mean": 0.007661543993903557
+              },
+              "renewal_wakeup_lag": {
+                "count": 40338,
+                "mean": 0.007891806267279753
+              },
+              "renewal_service": {
+                "count": 40333,
+                "mean": 0.060803603620070264
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "pipeline_residence": {
+                "count": 11445,
+                "mean": 12.433388083024735
+              }
+            },
+            {
+              "admission_lag": {
+                "count": 12135,
+                "mean": 13.950344489382507
+              },
+              "cycle_duration": {
+                "count": 11970,
+                "mean": 11.965596219482785
+              },
+              "cycle_overrun": {
+                "count": 11970,
+                "mean": 0.3146536589997047
+              },
+              "resolve_wait": {
+                "count": 12135,
+                "mean": 0.0000016428065226464347
+              },
+              "resolve_service": {
+                "count": 12134,
+                "mean": 0.0025934463896980847
+              },
+              "fetch_wait": {
+                "count": 12135,
+                "mean": 0.0000016238849604717979
+              },
+              "fetch_service": {
+                "count": 12000,
+                "mean": 11.734580029798234
+              },
+              "ingest_wait": {
+                "count": 11976,
+                "mean": 0.0753277083974913
+              },
+              "ingest_service": {
+                "count": 11968,
+                "mean": 0.047433249170723155
+              },
+              "acknowledge_wait": {
+                "count": 11967,
+                "mean": 0.0
+              },
+              "acknowledge_service": {
+                "count": 11970,
+                "mean": 0.06332508380477743
+              },
+              "cursor_read_service": {
+                "count": 12135,
+                "mean": 0.006004589238999543
+              },
+              "cursor_initialize_service": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "cursor_update_delay": {
+                "count": 11970,
+                "mean": 0.06333653103028608
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "reactor_lag": {
+                "count": 557,
+                "mean": 0.0076386697215815634
+              },
+              "renewal_wakeup_lag": {
+                "count": 41400,
+                "mean": 0.008750579409309154
+              },
+              "renewal_service": {
+                "count": 41387,
+                "mean": 0.11573478415753818
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "pipeline_residence": {
+                "count": 11693,
+                "mean": 12.852116327804175
+              }
+            }
+          ]
+        },
+        {
+          "worker_id": "bench-2-2",
+          "metrics": {
+            "active_cycles": 0,
+            "max_active_cycles": 4500,
+            "active_fetches": 0,
+            "max_active_fetches": 2908,
+            "queued_batches": 0,
+            "max_queued_batches": 186,
+            "active_ingests": 0,
+            "max_active_ingests": 16,
+            "assigned_tenants": 15086,
+            "discovered_tenants": 30000,
+            "pipeline_utilization": 0.0,
+            "queue_wait": 0.010469579952768981,
+            "ingestion_duration": 0.02609268797095865,
+            "cursor_update_delay": 0.05221672891639173,
+            "retry_count": 0,
+            "completed_cycles": 31947,
+            "ownership_acquisitions": 32884,
+            "ownership_skips": 292,
+            "polling_lag": 15.018991922959685,
+            "polling_lag_p50": 30,
+            "polling_lag_p95": 30,
+            "polling_lag_p99": 30,
+            "renewal_deadline_misses": 0,
+            "discovery_successes": 2,
+            "discovery_failures": 0,
+            "pipeline_reservations": 0,
+            "max_pipeline_reservations": 4500,
+            "retry_reservations": 0,
+            "max_retry_reservations": 0,
+            "parked_cycles": 0,
+            "max_parked_cycles": 0,
+            "upstream_groups": 0,
+            "max_upstream_groups": 0,
+            "reserved_bytes": 0,
+            "max_reserved_bytes": 192675840,
+            "retained_bytes": 0,
+            "max_retained_bytes": 1220096,
+            "byte_budget_waits": 0,
+            "byte_budget_waiters": 0,
+            "max_byte_budget_waiters": 1,
+            "oversized_batches": 0,
+            "estimate_overflows": 0,
+            "active_resolves": 0,
+            "max_active_resolves": 10,
+            "pending_acknowledgements": 0,
+            "max_pending_acknowledgements": 32,
+            "retained_batches": 0,
+            "max_retained_batches": 215,
+            "retry_overflows": 0,
+            "payload_rejections": 0,
+            "overdue_tenants": 0,
+            "oldest_overdue_age": 0.0,
+            "pressure": {
+              "admission_lag": {
+                "count": 33176,
+                "sum": 338002.028240014,
+                "min": 0.0000689593143761158,
+                "max": 55.87644981907215,
+                "last": 15.018991922959685,
+                "outcomes": {
+                  "success": 33176,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 30
+              },
+              "cycle_duration": {
+                "count": 33176,
+                "sum": 385405.9169530644,
+                "min": 0.0002911289921030402,
+                "max": 95.50360864098184,
+                "last": 10.955610745004378,
+                "outcomes": {
+                  "success": 32239,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 937
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 300
+              },
+              "cycle_overrun": {
+                "count": 33176,
+                "sum": 6440.355873145862,
+                "min": 0,
+                "max": 35.50361111294478,
+                "last": 0,
+                "outcomes": {
+                  "success": 32239,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 937
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 10
+              },
+              "resolve_wait": {
+                "count": 47673,
+                "sum": 0.07200373476371169,
+                "min": 0.0000007030321285128593,
+                "max": 0.00004853098653256893,
+                "last": 0.0000014450633898377419,
+                "outcomes": {
+                  "success": 47673,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.001,
+                "p99": 0.001
+              },
+              "resolve_service": {
+                "count": 47673,
+                "sum": 86.99599156202748,
+                "min": 0.0000859119463711977,
+                "max": 0.07292620709631592,
+                "last": 0.0028580729849636555,
+                "outcomes": {
+                  "success": 47673,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.01,
+                "p99": 0.01
+              },
+              "fetch_wait": {
+                "count": 32884,
+                "sum": 0.05068166751880199,
+                "min": 0.000000716070644557476,
+                "max": 0.00004990503657609224,
+                "last": 0.0000014799879863858223,
+                "outcomes": {
+                  "success": 32884,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.001,
+                "p95": 0.001,
+                "p99": 0.001
+              },
+              "fetch_service": {
+                "count": 32884,
+                "sum": 379043.93295912025,
+                "min": 1.0019788939971477,
+                "max": 94.75974632590078,
+                "last": 10.953636963036843,
+                "outcomes": {
+                  "success": 32021,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 863
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 300
+              },
+              "ingest_wait": {
+                "count": 32021,
+                "sum": 1770.9596045167418,
+                "min": 0.00003381993155926466,
+                "max": 0.8960145990131423,
+                "last": 0.8393975079525262,
+                "outcomes": {
+                  "success": 31948,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 73
+                },
+                "p50": 0.005,
+                "p95": 0.5,
+                "p99": 1
+              },
+              "ingest_service": {
+                "count": 31948,
+                "sum": 1423.3065834641457,
+                "min": 0.022156525985337794,
+                "max": 0.4074612569529563,
+                "last": 0.026058191899210215,
+                "outcomes": {
+                  "success": 31948,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.05,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "acknowledge_wait": {
+                "count": 31948,
+                "sum": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 31948,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "acknowledge_service": {
+                "count": 31948,
+                "sum": 1962.2925684300717,
+                "min": 0.006157043040730059,
+                "max": 0.40746175206732005,
+                "last": 0.05219577101524919,
+                "outcomes": {
+                  "success": 31947,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 1
+                },
+                "p50": 0.1,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "cursor_read_service": {
+                "count": 32884,
+                "sum": 182.2243199585937,
+                "min": 0.00015255098696798086,
+                "max": 0.29701115493662655,
+                "last": 0.006441552075557411,
+                "outcomes": {
+                  "success": 32884,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.025,
+                "p99": 0.05
+              },
+              "cursor_initialize_service": {
+                "count": 14789,
+                "sum": 58.128835638286546,
+                "min": 0.00019001902546733618,
+                "max": 0.2955568500328809,
+                "last": 0.021818956010974944,
+                "outcomes": {
+                  "success": 14789,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.01,
+                "p99": 0.025
+              },
+              "cursor_update_delay": {
+                "count": 31948,
+                "sum": 1962.6545438603498,
+                "min": 0.006212293985299766,
+                "max": 0.40747317811474204,
+                "last": 0.05221054097637534,
+                "outcomes": {
+                  "success": 31947,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 1
+                },
+                "p50": 0.1,
+                "p95": 0.1,
+                "p99": 0.25
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "reactor_lag": {
+                "count": 1627,
+                "sum": 10.14213893795386,
+                "min": 0.00001916696783155203,
+                "max": 0.26410951104480773,
+                "last": 0.000274118036031723,
+                "outcomes": {
+                  "success": 1627,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.05,
+                "p99": 0.05
+              },
+              "renewal_wakeup_lag": {
+                "count": 109863,
+                "sum": 756.1722401985899,
+                "min": 0.000015577999874949455,
+                "max": 0.29389205598272383,
+                "last": 0.0002892029006034136,
+                "outcomes": {
+                  "success": 109863,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.005,
+                "p95": 0.05,
+                "p99": 0.1
+              },
+              "renewal_service": {
+                "count": 109863,
+                "sum": 5735.621238138527,
+                "min": 0.00014988495968282223,
+                "max": 1.1262537490110844,
+                "last": 0.00043659296352416277,
+                "outcomes": {
+                  "success": 109360,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 503
+                },
+                "p50": 0.005,
+                "p95": 0.25,
+                "p99": 1
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "sum": 0.0,
+                "min": null,
+                "max": null,
+                "last": 0.0,
+                "outcomes": {
+                  "success": 0,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 0
+                },
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0
+              },
+              "pipeline_residence": {
+                "count": 33176,
+                "sum": 415385.3779063693,
+                "min": 0.0002982240403071046,
+                "max": 103.19501609099098,
+                "last": 10.956116194021888,
+                "outcomes": {
+                  "success": 32239,
+                  "error": 0,
+                  "timeout": 0,
+                  "cancelled": 937
+                },
+                "p50": 30,
+                "p95": 30,
+                "p99": 300
+              }
+            },
+            "redis": {
+              "renewal_successes": 109360,
+              "renewal_failures": 0,
+              "renewal_deadline_misses": 0,
+              "pressure": {
+                "commands_checkout": {
+                  "count": 212507,
+                  "sum": 16.80061382241547,
+                  "min": 0.0000006710179150104523,
+                  "max": 0.04445174499414861,
+                  "last": 0.000002013053745031357,
+                  "buckets": [
+                    0,
+                    206985,
+                    5024,
+                    464,
+                    31,
+                    3,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 212507,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 0
+                  },
+                  "p50": 0.001,
+                  "p95": 0.001,
+                  "p99": 0.005
+                },
+                "commands_service": {
+                  "count": 212507,
+                  "sum": 872.8029913806822,
+                  "min": 0.00012055190745741129,
+                  "max": 0.2969761450076476,
+                  "last": 0.00033574807457625866,
+                  "buckets": [
+                    0,
+                    21027,
+                    138034,
+                    41933,
+                    10062,
+                    831,
+                    613,
+                    4,
+                    3,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 211566,
+                    "error": 0,
+                    "timeout": 941,
+                    "cancelled": 0
+                  },
+                  "p50": 0.005,
+                  "p95": 0.025,
+                  "p99": 0.025
+                },
+                "renewal_checkout": {
+                  "count": 110111,
+                  "sum": 4840.7040771116735,
+                  "min": 0.0000008189817890524864,
+                  "max": 1.0975733370287344,
+                  "last": 0.000001609092578291893,
+                  "buckets": [
+                    0,
+                    67966,
+                    6135,
+                    3596,
+                    9101,
+                    6655,
+                    6611,
+                    5415,
+                    1649,
+                    2400,
+                    583,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 109699,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 412
+                  },
+                  "p50": 0.001,
+                  "p95": 0.25,
+                  "p99": 1
+                },
+                "renewal_service": {
+                  "count": 109699,
+                  "sum": 625.2910922883311,
+                  "min": 0.00013204396236687899,
+                  "max": 0.29414391098544,
+                  "last": 0.00039191695395857096,
+                  "buckets": [
+                    0,
+                    5361,
+                    57404,
+                    33264,
+                    12394,
+                    817,
+                    458,
+                    0,
+                    1,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 109631,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 68
+                  },
+                  "p50": 0.005,
+                  "p95": 0.025,
+                  "p99": 0.05
+                },
+                "lease_renewal_slack": {
+                  "count": 109863,
+                  "sum": 651890.3614263581,
+                  "min": 4.853429478011094,
+                  "max": 5.999532112036832,
+                  "last": 5.99493345094379,
+                  "buckets": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1022,
+                    108841,
+                    0,
+                    0,
+                    0,
+                    0
+                  ],
+                  "outcomes": {
+                    "success": 109360,
+                    "error": 0,
+                    "timeout": 0,
+                    "cancelled": 503
+                  },
+                  "p50": 10,
+                  "p95": 10,
+                  "p99": 10
+                }
+              }
+            }
+          },
+          "stage_residence_seconds": {
+            "admission_lag": {
+              "mean": 10.188148910055883,
+              "count": 33176,
+              "p95_bucket_upper_bound": 30
+            },
+            "cycle_duration": {
+              "mean": 11.617009794823499,
+              "count": 33176,
+              "p95_bucket_upper_bound": 30
+            },
+            "cycle_overrun": {
+              "mean": 0.194126955423977,
+              "count": 33176,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "resolve_wait": {
+              "mean": 0.0000015103671840184526,
+              "count": 47673,
+              "p95_bucket_upper_bound": 0.001
+            },
+            "resolve_service": {
+              "mean": 0.0018248482697129924,
+              "count": 47673,
+              "p95_bucket_upper_bound": 0.01
+            },
+            "fetch_wait": {
+              "mean": 0.0000015412257486559417,
+              "count": 32884,
+              "p95_bucket_upper_bound": 0.001
+            },
+            "fetch_service": {
+              "mean": 11.526697876144029,
+              "count": 32884,
+              "p95_bucket_upper_bound": 30
+            },
+            "ingest_wait": {
+              "mean": 0.055306192952023416,
+              "count": 32021,
+              "p95_bucket_upper_bound": 0.5
+            },
+            "ingest_service": {
+              "mean": 0.04455072566245604,
+              "count": 31948,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "acknowledge_wait": {
+              "mean": 0.0,
+              "count": 31948,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "acknowledge_service": {
+              "mean": 0.06142145262395367,
+              "count": 31948,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "cursor_read_service": {
+              "mean": 0.005541428048856395,
+              "count": 32884,
+              "p95_bucket_upper_bound": 0.025
+            },
+            "cursor_initialize_service": {
+              "mean": 0.003930545380910579,
+              "count": 14789,
+              "p95_bucket_upper_bound": 0.01
+            },
+            "cursor_update_delay": {
+              "mean": 0.06143278276763334,
+              "count": 31948,
+              "p95_bucket_upper_bound": 0.1
+            },
+            "fetch_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "ingest_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "acknowledge_backoff": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "reactor_lag": {
+              "mean": 0.0062336440921658635,
+              "count": 1627,
+              "p95_bucket_upper_bound": 0.05
+            },
+            "renewal_wakeup_lag": {
+              "mean": 0.00688286538869856,
+              "count": 109863,
+              "p95_bucket_upper_bound": 0.05
+            },
+            "renewal_service": {
+              "mean": 0.052207032742038056,
+              "count": 109863,
+              "p95_bucket_upper_bound": 0.25
+            },
+            "retry_admission_wait": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "byte_budget_wait": {
+              "mean": 0.0,
+              "count": 0,
+              "p95_bucket_upper_bound": 0.0
+            },
+            "pipeline_residence": {
+              "mean": 12.520658846948676,
+              "count": 33176,
+              "p95_bucket_upper_bound": 30
+            }
+          },
+          "benchmark_completed_cycles": 31947,
+          "measurement_completed_cycles": 29985,
+          "baseline_completed_cycles": 0,
+          "upstream_fetches": 32021,
+          "payload_bytes": 157388800,
+          "startup_discovery_seconds": 0.9190316379535943,
+          "elapsed_seconds": 170.96460921689868,
+          "latency_seconds": {
+            "p50_bucket_upper_bound": 30,
+            "p95_bucket_upper_bound": 30,
+            "p99_bucket_upper_bound": 120
+          },
+          "samples": [
+            {
+              "at_seconds": 0,
+              "actual_at_seconds": 0.004407298984006047,
+              "completed_cycles": 0,
+              "active_cycles": 0,
+              "queued_batches": 0,
+              "overdue_tenants": 0,
+              "oldest_overdue_age": 0.0,
+              "retained_bytes": 0,
+              "reserved_bytes": 0,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 1,
+                "busy": 0,
+                "dead": 0,
+                "idle": 1,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 109.08203125
+            },
+            {
+              "at_seconds": 40.0,
+              "actual_at_seconds": 40.006214634981006,
+              "completed_cycles": 6448,
+              "active_cycles": 2418,
+              "queued_batches": 7,
+              "overdue_tenants": 1294,
+              "oldest_overdue_age": 5.180582234635949,
+              "retained_bytes": 275456,
+              "reserved_bytes": 158466048,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 19,
+                "busy": 10,
+                "dead": 0,
+                "idle": 9,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 313.72265625
+            },
+            {
+              "at_seconds": 100.0,
+              "actual_at_seconds": 100.00742644595448,
+              "completed_cycles": 18366,
+              "active_cycles": 2312,
+              "queued_batches": 2,
+              "overdue_tenants": 2926,
+              "oldest_overdue_age": 14.503477602964267,
+              "retained_bytes": 110592,
+              "reserved_bytes": 151519232,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 21,
+                "busy": 5,
+                "dead": 0,
+                "idle": 16,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 397.4921875
+            },
+            {
+              "at_seconds": 160.0,
+              "actual_at_seconds": 160.00823440100066,
+              "completed_cycles": 29985,
+              "active_cycles": 2901,
+              "queued_batches": 1,
+              "overdue_tenants": 2750,
+              "oldest_overdue_age": 15.017999322968535,
+              "retained_bytes": 82944,
+              "reserved_bytes": 190119936,
+              "postgres_pool": {
+                "size": 37,
+                "connections": 21,
+                "busy": 6,
+                "dead": 0,
+                "idle": 15,
+                "waiting": 0,
+                "checkout_timeout": 2.0
+              },
+              "rss_megabytes": 428.29296875
+            }
+          ],
+          "tenant_coverage": {
+            "count": 15080,
+            "minimum_cycles": 1,
+            "maximum_cycles": 3
+          },
+          "sample_count": 33,
+          "sampled_postgres_peak_busy": 16,
+          "post_warmup_stage_residence_seconds": [
+            {
+              "admission_lag": {
+                "count": 11816,
+                "mean": 11.315529278157483
+              },
+              "cycle_duration": {
+                "count": 11922,
+                "mean": 11.475137451549697
+              },
+              "cycle_overrun": {
+                "count": 11922,
+                "mean": 0.12262637926970964
+              },
+              "resolve_wait": {
+                "count": 17746,
+                "mean": 0.0000015343550568939625
+              },
+              "resolve_service": {
+                "count": 17747,
+                "mean": 0.001963591246525424
+              },
+              "fetch_wait": {
+                "count": 11813,
+                "mean": 0.000001564261336458241
+              },
+              "fetch_service": {
+                "count": 11900,
+                "mean": 11.322173824440052
+              },
+              "ingest_wait": {
+                "count": 11905,
+                "mean": 0.029635978366501774
+              },
+              "ingest_service": {
+                "count": 11909,
+                "mean": 0.04571594046352943
+              },
+              "acknowledge_wait": {
+                "count": 11916,
+                "mean": 0.0
+              },
+              "acknowledge_service": {
+                "count": 11918,
+                "mean": 0.06185786120891785
+              },
+              "cursor_read_service": {
+                "count": 11811,
+                "mean": 0.005972291464760367
+              },
+              "cursor_initialize_service": {
+                "count": 5935,
+                "mean": 0.004922170309242404
+              },
+              "cursor_update_delay": {
+                "count": 11918,
+                "mean": 0.06186928919072137
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "reactor_lag": {
+                "count": 562,
+                "mean": 0.0066599844266358905
+              },
+              "renewal_wakeup_lag": {
+                "count": 40853,
+                "mean": 0.007324997686189273
+              },
+              "renewal_service": {
+                "count": 40852,
+                "mean": 0.03145754580402295
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "pipeline_residence": {
+                "count": 11922,
+                "mean": 12.500490578954967
+              }
+            },
+            {
+              "admission_lag": {
+                "count": 12206,
+                "mean": 15.34940232767297
+              },
+              "cycle_duration": {
+                "count": 11619,
+                "mean": 12.008073527971195
+              },
+              "cycle_overrun": {
+                "count": 11619,
+                "mean": 0.2901247623830427
+              },
+              "resolve_wait": {
+                "count": 12207,
+                "mean": 0.0000016060489761399198
+              },
+              "resolve_service": {
+                "count": 12206,
+                "mean": 0.0025313800633653015
+              },
+              "fetch_wait": {
+                "count": 12206,
+                "mean": 0.0000015621191962232516
+              },
+              "fetch_service": {
+                "count": 11611,
+                "mean": 11.726677481550151
+              },
+              "ingest_wait": {
+                "count": 11612,
+                "mean": 0.11367239718109248
+              },
+              "ingest_service": {
+                "count": 11612,
+                "mean": 0.04747937203516389
+              },
+              "acknowledge_wait": {
+                "count": 11612,
+                "mean": 0.0
+              },
+              "acknowledge_service": {
+                "count": 11619,
+                "mean": 0.06326716373403968
+              },
+              "cursor_read_service": {
+                "count": 12207,
+                "mean": 0.006007093322323181
+              },
+              "cursor_initialize_service": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "cursor_update_delay": {
+                "count": 11619,
+                "mean": 0.06327814815435251
+              },
+              "fetch_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "ingest_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "acknowledge_backoff": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "reactor_lag": {
+                "count": 556,
+                "mean": 0.007853800637342652
+              },
+              "renewal_wakeup_lag": {
+                "count": 40127,
+                "mean": 0.007959313988113729
+              },
+              "renewal_service": {
+                "count": 40128,
+                "mean": 0.10373621705537406
+              },
+              "retry_admission_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "byte_budget_wait": {
+                "count": 0,
+                "mean": 0.0
+              },
+              "pipeline_residence": {
+                "count": 11617,
+                "mean": 13.532817761029834
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

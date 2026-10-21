@@ -18,6 +18,7 @@ module Acp
   class RedisCoordinator
     Progress = Struct.new(:cursor, :revision, keyword_init: true)
     Lease = Struct.new(:worker_id, :token, :timing, keyword_init: true)
+    Membership = Struct.new(:records, :revision, keyword_init: true)
 
     CLAIM_SCRIPT = <<~LUA
       local now = redis.call("TIME")
@@ -121,9 +122,11 @@ module Acp
       local now = redis.call("TIME")
       local now_ms = (now[1] * 1000) + math.floor(now[2] / 1000)
       if tonumber(redis.call("HGET", KEYS[1], "deadline") or "0") <= now_ms then return "LEASE_LOST" end
-      redis.call("ZADD", KEYS[2], 0, ARGV[2])
-      redis.call("HSET", KEYS[3], "generation", ARGV[3])
-      redis.call("INCR", KEYS[4])
+      for index = 4, #KEYS do
+        redis.call("ZADD", KEYS[2], 0, ARGV[index - 1])
+        redis.call("HSET", KEYS[index], "generation", ARGV[2])
+      end
+      redis.call("INCR", KEYS[3])
       return "OK"
     LUA
 
@@ -147,6 +150,16 @@ module Acp
       return 1
     LUA
 
+    REGISTER_SCRIPT = <<~LUA
+      local generation = tonumber(redis.call("GET", KEYS[3]) or "0")
+      for index = 4, #KEYS do
+        redis.call("ZADD", KEYS[1], 0, ARGV[index - 3])
+        redis.call("HSET", KEYS[index], "generation", generation)
+      end
+      redis.call("INCR", KEYS[2])
+      return "OK"
+    LUA
+
     ADVANCE_SCRIPT = <<~LUA
       if redis.call("HGET", KEYS[1], "poll_id") == ARGV[2] then return "APPLIED" end
       local now = redis.call("TIME")
@@ -167,10 +180,31 @@ module Acp
       return "APPLIED"
     LUA
 
+    READ_SCRIPT = <<~LUA
+      local cursor = redis.call("HGET", KEYS[1], "cursor")
+      if cursor then return {cursor, redis.call("HGET", KEYS[1], "revision")} end
+      if redis.call("SISMEMBER", KEYS[2], ARGV[1]) == 1 then return {"MISSING"} end
+      return {}
+    LUA
+
+    VALID_SCRIPT = <<~LUA
+      local now = redis.call("TIME")
+      local now_ms = (now[1] * 1000) + math.floor(now[2] / 1000)
+      if redis.call("HGET", KEYS[1], "token") ~= ARGV[1] then return 0 end
+      if tonumber(redis.call("HGET", KEYS[1], "deadline") or "0") <= now_ms then return 0 end
+      return 1
+    LUA
+
+    SCRIPT_SHAS = constants.grep(/_SCRIPT\z/).to_h do |name|
+      script = const_get(name)
+      [script, Digest::SHA1.hexdigest(script)]
+    end.freeze
+
     def initialize(application:, environment:, program:, redis_url: ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0"),
                    redis_options: {}, connection_factory: nil, worker_id: SecureRandom.uuid,
                    lease_ttl: 60, claim_scan_limit: 256, worker_scan_limit: 256,
-                   connection_pool_size: 16, renewal_pool_size: 8, clock: MonotonicClock.new)
+                   connection_pool_size: 16, renewal_pool_size: 8, clock: MonotonicClock.new,
+                   operation_timeout: nil)
       [application, environment, program].each do |part|
         unless part.is_a?(String) && !part.empty?
           raise ConfigurationError, "Redis namespace components must be nonempty strings"
@@ -197,6 +231,12 @@ module Acp
       end
 
       namespace = Base64.urlsafe_encode64(JSON.generate([application, environment, program]), padding: false)
+      valid_timeout = operation_timeout.is_a?(Numeric) && operation_timeout.finite? && operation_timeout.positive?
+      if operation_timeout && !valid_timeout
+        raise ConfigurationError, "operation_timeout must be a finite positive number"
+      end
+
+      @operation_timeout = operation_timeout
       @prefix = "acp:v1:#{namespace}"
       @redis_url = redis_url
       @redis_options = redis_options.dup.freeze
@@ -215,6 +255,7 @@ module Acp
       @pressure = PressureMetrics.new(%i[commands_checkout commands_service renewal_checkout renewal_service
                                          lease_renewal_slack], clock: clock)
       @renewal_metrics = { renewal_successes: 0, renewal_failures: 0, renewal_deadline_misses: 0 }
+      @snapshot_flights = {}
     end
 
     attr_reader :worker_id, :discovered_tenant_count
@@ -225,42 +266,41 @@ module Acp
 
     def register_tenants(tenant_ids)
       tenant_ids.each_slice(@claim_scan_limit) do |batch|
-        identities = batch.map do |tenant_id|
+        identities = CooperativeWork.each(batch).map do |tenant_id|
           identity = canonical_tenant_id(tenant_id)
           @tenant_values[identity] = tenant_id
           identity
         end
         with_client do |redis|
-          generation = Integer(redis.get(key("discovery:completed")) || 0)
-          redis.pipelined do |pipeline|
-            identities.each do |identity|
-              pipeline.zadd(key("tenants"), 0, identity)
-              pipeline.hset(tenant_key(identity), "generation", generation)
-            end
-            pipeline.incr(key("membership:revision"))
-          end
+          execute_script(redis, REGISTER_SCRIPT,
+                         keys: [key("tenants"), key("membership:revision"), key("discovery:completed"),
+                                *identities.map { |identity| tenant_key(identity) }], argv: identities)
         end
       end
       nil
     end
 
     def enabled_tenants
-      tenant_ids.map { |identity| @tenant_values[identity] || decode_tenant_id(identity) }
+      CooperativeWork.each(tenant_ids).map { |identity| @tenant_values[identity] || decode_tenant_id(identity) }
     end
 
     # Assignment snapshots are advisory; CLAIM_SCRIPT remains authoritative.
     # Pause state and completed membership are consumed by every worker.
     def scheduling_tenants
+      single_flight(:assignment) { assignment_snapshot }.dup
+    end
+
+    def assignment_snapshot
       workers = live_worker_records
       return [] if workers.empty?
 
-      records = membership_records
-      signature = [@membership_revision, workers.map { |id, status| [id, status.fetch("capacity", 1)] }.sort]
+      snapshot = membership_records
+      signature = [snapshot.revision, workers.map { |id, status| [id, status.fetch("capacity", 1)] }.sort]
       return @scheduled_tenants.dup if @assignment_signature == signature
 
       scheduled = []
-      records.each_slice(@claim_scan_limit) do |batch|
-        batch.each do |identity, status, completed|
+      snapshot.records.each_slice(@claim_scan_limit) do |batch|
+        CooperativeWork.each(batch) do |identity, status, completed|
           next if status.fetch("generation", "0").to_i < completed || status["paused"] == "1"
           next unless assigned_worker(identity, workers).first == encoded_worker_id
 
@@ -272,11 +312,12 @@ module Acp
       @assignment_signature = signature
       @scheduled_tenants.dup
     end
+    private :assignment_snapshot
 
     def acquire_discovery
       token = SecureRandom.hex(24)
       acquired = with_client do |redis|
-        redis.eval(DISCOVERY_ACQUIRE_SCRIPT, keys: [key("discovery:lease")], argv: [token, @lease_ttl_ms])
+        execute_script(redis, DISCOVERY_ACQUIRE_SCRIPT, keys: [key("discovery:lease")], argv: [token, @lease_ttl_ms])
       end
       token if acquired == 1
     end
@@ -287,14 +328,14 @@ module Acp
 
     def renew_discovery(token)
       with_client(lane: :renewal) do |redis|
-        redis.eval(DISCOVERY_RENEW_SCRIPT, keys: [key("discovery:lease")], argv: [token, @lease_ttl_ms]) == 1
+        execute_script(redis, DISCOVERY_RENEW_SCRIPT, keys: [key("discovery:lease")], argv: [token, @lease_ttl_ms]) == 1
       end
     end
 
     def begin_discovery(token)
       result = with_client do |redis|
-        redis.eval(DISCOVERY_GENERATION_SCRIPT, keys: [key("discovery:lease"), key("discovery:generation")],
-                                                argv: [token])
+        execute_script(redis, DISCOVERY_GENERATION_SCRIPT,
+                       keys: [key("discovery:lease"), key("discovery:generation")], argv: [token])
       end
       raise LeaseLostError, "discovery lease was lost" if result == "LEASE_LOST"
 
@@ -302,24 +343,32 @@ module Acp
     end
 
     def register_discovered_tenant(tenant_id, generation, token)
-      identity = canonical_tenant_id(tenant_id)
-      @tenant_values[identity] = tenant_id
+      register_discovered_tenants([tenant_id], generation, token)
+    end
+
+    # Runtime buffers at most discovery_batch_size IDs (default 256, maximum 1024).
+    def register_discovered_tenants(tenant_ids, generation, token)
+      raise ArgumentError, "discovery batch must contain 1..1024 IDs" unless (1..1024).cover?(tenant_ids.length)
+
+      identities = tenant_ids.map { |id| canonical_tenant_id(id) }
       result = with_client do |redis|
-        redis.eval(
-          DISCOVERY_REGISTER_SCRIPT,
-          keys: [key("discovery:lease"), key("tenants"), tenant_key(identity), key("membership:revision")],
-          argv: [token, identity, generation]
+        execute_script(
+          redis, DISCOVERY_REGISTER_SCRIPT,
+          keys: [key("discovery:lease"), key("tenants"), key("membership:revision"),
+                 *identities.map { |identity| tenant_key(identity) }],
+          argv: [token, generation, *identities]
         )
       end
       raise LeaseLostError, "discovery lease was lost" if result == "LEASE_LOST"
 
+      identities.zip(tenant_ids) { |identity, id| @tenant_values[identity] = id }
       nil
     end
 
     def complete_discovery(generation, token)
       result = with_client do |redis|
-        redis.eval(
-          DISCOVERY_COMPLETE_SCRIPT,
+        execute_script(
+          redis, DISCOVERY_COMPLETE_SCRIPT,
           keys: [key("discovery:lease"), key("discovery:completed"), key("membership:revision")],
           argv: [token, generation]
         )
@@ -330,7 +379,7 @@ module Acp
     end
 
     def release_discovery(token)
-      with_client { |redis| redis.eval(RELEASE_SCRIPT, keys: [key("discovery:lease")], argv: [token]) }
+      with_client { |redis| execute_script(redis, RELEASE_SCRIPT, keys: [key("discovery:lease")], argv: [token]) }
       nil
     end
 
@@ -364,8 +413,6 @@ module Acp
       ids.each do |identity|
         tenant_id = @tenant_values[identity] || decode_tenant_id(identity)
         @tenant_values[identity] = tenant_id
-        next unless enabled_identity?(identity) && !tenant_paused?(tenant_id)
-
         lease = acquire(tenant_id)
         claimed << [tenant_id, lease] if lease
         break if claimed.length >= limit
@@ -383,8 +430,8 @@ module Acp
       deadline = nil
       claimed = with_client do |redis|
         deadline = @clock.now + @lease_ttl_ms / 1000.0
-        redis.eval(
-          CLAIM_SCRIPT,
+        execute_script(
+          redis, CLAIM_SCRIPT,
           keys: [lease_key(identity), key("workers"), tenant_key(identity), key("discovery:completed")],
           argv: [worker_id, encoded_worker_id, token, @lease_ttl_ms, identity, key("worker:"), @worker_scan_limit]
         )
@@ -402,7 +449,7 @@ module Acp
       deadline = nil
       result = with_client(lane: :renewal) do |redis|
         deadline = @clock.now + @lease_ttl_ms / 1000.0
-        redis.eval(RENEW_SCRIPT, keys: [lease_key(identity)], argv: [lease.token, @lease_ttl_ms])
+        execute_script(redis, RENEW_SCRIPT, keys: [lease_key(identity)], argv: [lease.token, @lease_ttl_ms])
       end
       @renewal_metrics[result == 1 ? :renewal_successes : :renewal_failures] += 1
       lease.timing[:deadline] = deadline if result == 1 && lease.timing
@@ -422,13 +469,13 @@ module Acp
 
     def valid?(tenant_id, lease)
       identity = canonical_tenant_id(tenant_id)
-      with_client { |redis| redis.hget(lease_key(identity), "token") == lease.token }
+      with_client { |redis| execute_script(redis, VALID_SCRIPT, keys: [lease_key(identity)], argv: [lease.token]) == 1 }
     end
 
     def release(tenant_id, lease)
       identity = canonical_tenant_id(tenant_id)
       with_client do |redis|
-        redis.eval(RELEASE_SCRIPT, keys: [lease_key(identity)], argv: [lease.token])
+        execute_script(redis, RELEASE_SCRIPT, keys: [lease_key(identity)], argv: [lease.token])
       end
       nil
     end
@@ -439,16 +486,16 @@ module Acp
 
     def read_state(tenant_id)
       identity = canonical_tenant_id(tenant_id)
-      values = with_client { |redis| redis.hgetall(progress_key(identity)) }
-      if values.key?("cursor")
-        return Progress.new(
-          cursor: Timestamp.load(values.fetch("cursor")),
-          revision: Integer(values.fetch("revision"))
-        ).freeze
+      values = with_client do |redis|
+        execute_script(redis, READ_SCRIPT, keys: [progress_key(identity), key("initialized")], argv: [identity])
       end
-      return nil unless with_client { |redis| redis.sismember(key("initialized"), identity) }
+      return nil if values.empty?
 
-      raise MissingProgressError, "committed progress disappeared for tenant #{tenant_id.inspect}"
+      if values.first == "MISSING"
+        raise MissingProgressError, "committed progress disappeared for tenant #{tenant_id.inspect}"
+      end
+
+      Progress.new(cursor: Timestamp.load(values[0]), revision: Integer(values[1])).freeze
     end
 
     def initialize_cursor(tenant_id, cursor)
@@ -459,7 +506,8 @@ module Acp
       identity = canonical_tenant_id(tenant_id)
       timestamp = Timestamp.dump(cursor)
       result = with_client do |redis|
-        redis.eval(INITIALIZE_SCRIPT, keys: [progress_key(identity), key("initialized")], argv: [identity, timestamp])
+        execute_script(redis, INITIALIZE_SCRIPT,
+                       keys: [progress_key(identity), key("initialized")], argv: [identity, timestamp])
       end
       if result.first == "MISSING"
         raise MissingProgressError, "committed progress disappeared for tenant #{tenant_id.inspect}"
@@ -481,8 +529,8 @@ module Acp
     def advance(tenant_id, poll_id, cursor, expected_revision:, lease:)
       identity = canonical_tenant_id(tenant_id)
       result = with_client do |redis|
-        redis.eval(
-          ADVANCE_SCRIPT,
+        execute_script(
+          redis, ADVANCE_SCRIPT,
           keys: [progress_key(identity), key("initialized"), lease_key(identity)],
           argv: [identity, poll_id, expected_revision, lease.token, Timestamp.dump(cursor)]
         )
@@ -504,8 +552,8 @@ module Acp
       end
 
       with_client(lane: :renewal) do |redis|
-        result = redis.eval(
-          WORKER_HEARTBEAT_SCRIPT,
+        result = execute_script(
+          redis, WORKER_HEARTBEAT_SCRIPT,
           keys: [worker_key, key("workers")],
           argv: [capacity, active, @lease_ttl_ms, encoded_worker_id, @worker_scan_limit]
         )
@@ -532,7 +580,7 @@ module Acp
       return {}.freeze if workers.empty?
 
       tenant_ids.each_slice(@claim_scan_limit) do |batch|
-        batch.each do |tenant_id|
+        CooperativeWork.each(batch) do |tenant_id|
           identity = canonical_tenant_id(tenant_id)
           owner = assigned_worker(identity, workers)
           assignments.fetch(owner.first)["assigned_tenants"] += 1
@@ -568,13 +616,13 @@ module Acp
 
     def set_paused(tenant_id, value)
       with_client do |redis|
-        redis.eval(PAUSE_SCRIPT, keys: [tenant_key(canonical_tenant_id(tenant_id)), key("membership:revision")],
-                                 argv: [value])
+        execute_script(redis, PAUSE_SCRIPT,
+                       keys: [tenant_key(canonical_tenant_id(tenant_id)), key("membership:revision")], argv: [value])
       end
     end
 
     def assigned_worker(identity, workers)
-      workers.min_by do |encoded_id, status|
+      CooperativeWork.each(workers).min_by do |encoded_id, status|
         sample = (Digest::SHA1.hexdigest("#{identity}|#{encoded_id}")[0, 13].to_i(16) + 1).fdiv((2**52) + 1)
         [-Math.log(sample) / status.fetch("capacity", 1), encoded_id]
       end
@@ -621,15 +669,34 @@ module Acp
     end
 
     def tenant_ids
-      membership_records.filter_map do |identity, status, completed|
+      CooperativeWork.each(membership_records.records).filter_map do |identity, status, completed|
         identity if status.fetch("generation", "0").to_i >= completed
       end
     end
 
     def membership_records
-      revision = with_client { |redis| redis.get(key("membership:revision")) }
-      return @membership_records if @membership_records && @membership_revision == revision
+      single_flight(:membership) { membership_snapshot }
+    end
 
+    def membership_snapshot
+      3.times do
+        revision = with_client { |redis| redis.get(key("membership:revision")) }
+        return @membership_records if @membership_records && @membership_revision == revision
+
+        records = scan_membership
+        next unless with_client { |redis| redis.get(key("membership:revision")) } == revision
+
+        count = CooperativeWork.each(records).count do |_id, status, generation|
+          status.fetch("generation", "0").to_i >= generation
+        end
+        @membership_revision = revision
+        @discovered_tenant_count = count
+        return @membership_records = Membership.new(records: records.freeze, revision: revision).freeze
+      end
+      raise ProgressConflictError, "membership changed during three snapshot attempts"
+    end
+
+    def scan_membership
       records = []
       completed = with_client { |redis| Integer(redis.get(key("discovery:completed")) || 0) }
       offset = 0
@@ -642,23 +709,51 @@ module Acp
         statuses = with_client do |redis|
           redis.pipelined { |pipeline| batch.each { |identity| pipeline.hgetall(tenant_key(identity)) } }
         end
-        batch.zip(statuses).each { |identity, status| records << [identity, status, completed] }
+        CooperativeWork.each(batch.zip(statuses)) { |identity, status| records << [identity, status, completed] }
         offset += batch.length
       end
-      @membership_revision = revision
-      @discovered_tenant_count = records.count do |_id, status, generation|
-        status.fetch("generation", "0").to_i >= generation
-      end
-      @membership_records = records
+      records
     end
 
-    def enabled_identity?(identity)
-      with_client do |redis|
-        status = redis.hgetall(tenant_key(identity))
-        generation = Integer(status.fetch("generation", "0"))
-        completed = Integer(redis.get(key("discovery:completed")) || 0)
-        generation >= completed
+    # Reactor-local single flight. Cancellation always wakes followers and never
+    # publishes a partial result. A later call may retry a failed/cancelled flight.
+    def single_flight(name)
+      if (flight = @snapshot_flights[name])
+        flight[:ready].wait until flight[:done]
+        raise flight[:error] if flight[:error]
+
+        return flight[:result]
       end
+
+      flight = { ready: Async::Notification.new }
+      @snapshot_flights[name] = flight
+      leader = true
+      flight[:result] = yield
+      succeeded = true
+      flight[:result]
+    ensure
+      if leader
+        unless succeeded
+          flight[:error] = if $ERROR_INFO.is_a?(StandardError)
+                             $ERROR_INFO
+                           else
+                             CancellationError.new("#{name} snapshot was cancelled")
+                           end
+        end
+        flight[:done] = true
+        @snapshot_flights.delete(name)
+        flight[:ready].signal
+      end
+    end
+
+    # NOSCRIPT means Redis did not execute the mutation. Only that response is
+    # safe to recover here; transport failures remain ambiguous to the caller.
+    def execute_script(redis, script, keys:, argv:)
+      redis.evalsha(SCRIPT_SHAS.fetch(script), keys: keys, argv: argv)
+    rescue ::Redis::CommandError => e
+      raise unless e.message.match?(/\ANOSCRIPT\b/)
+
+      redis.eval(script, keys: keys, argv: argv)
     end
 
     def key(name)
@@ -673,7 +768,17 @@ module Acp
       key("progress:#{identity}")
     end
 
-    def with_client(lane: :commands)
+    def with_client(lane: :commands, &block)
+      if @operation_timeout && Async::Task.current?
+        Async::Task.current.with_timeout(@operation_timeout, StageTimeoutError) do
+          checkout_client(lane: lane, &block)
+        end
+      else
+        checkout_client(lane: lane, &block)
+      end
+    end
+
+    def checkout_client(lane:)
       semaphore = @client_semaphores.fetch(lane) if Async::Task.current?
       @pressure.measure(:"#{lane}_checkout") { semaphore&.acquire }
       acquired = true

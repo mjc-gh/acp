@@ -9,6 +9,8 @@ require "securerandom"
 require "tmpdir"
 require "fileutils"
 require "etc"
+require_relative "../benchmark/workload"
+require_relative "../lib/acp"
 ENV["RAILS_ENV"] = "test"
 require "rails"
 require "redis"
@@ -65,7 +67,7 @@ connection.add_index(
   :acp_reliability_benchmark_records,
   :external_id,
   unique: true,
-  name: "index_acp_versioned_records_on_external_id"
+  name: "index_acp_benchmark_records_on_external_id"
 )
 redis = Redis.new(url: ENV.fetch("ACP_TEST_REDIS_URL"))
 summary = []
@@ -83,15 +85,21 @@ begin
     initial_rss_by_pid = {}
     ending_rss_by_pid = {}
     begin
+      pipeline = CapacityWorkload.integer("PIPELINE_CAPACITY", 4500)
+      resolve = CapacityWorkload.integer("RESOLVE_CONCURRENCY", 16)
+      ingest = CapacityWorkload.integer("INGEST_CONCURRENCY", 16)
+      acp_connections = [pipeline, resolve + ingest].min + 1
+      pool_headroom = CapacityWorkload.integer("POOL_HEADROOM", 4)
+      raise ArgumentError, "pool headroom must be nonnegative" if pool_headroom.negative?
+
+      pool_size = Integer(ENV.fetch("ACP_TEST_POOL", (acp_connections + pool_headroom).to_s))
       worker_count.times do |index|
-        pool_size = Integer(ENV.fetch("ACP_BENCH_RESOLVE_CONCURRENCY", "16")) +
-                    Integer(ENV.fetch("ACP_BENCH_INGEST_CONCURRENCY", "16")) + 5
         environment = ENV.to_h.merge(
           "ACP_BENCH_APPLICATION" => run_application,
           "ACP_BENCH_WORKER_ID" => "bench-#{worker_count}-#{index + 1}",
           "ACP_BENCH_START_FILE" => start_file,
           "ACP_BENCH_SAMPLE_PATH" => File.join(sample_directory, "#{worker_count}-#{index + 1}.jsonl"),
-          "ACP_TEST_POOL" => ENV.fetch("ACP_TEST_POOL", pool_size.to_s)
+          "ACP_TEST_POOL" => pool_size.to_s
         )
         stdin, stdout, stderr, wait_thread = Open3.popen3(
           environment, RbConfig.ruby, "-Ilib", WORKER_SCRIPT
@@ -131,7 +139,6 @@ begin
         end
         sleep 0.25
       end
-      children.each { |child| Process.kill("TERM", child.fetch(:pid)) if child.fetch(:process).alive? }
       worker_reports = children.map do |child|
         output = Timeout.timeout(20) { child.fetch(:stdout).read.lines }
         report = JSON.parse(output.last || "{}")
@@ -142,43 +149,97 @@ begin
       end
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
       rows = AcpReliabilityBenchmarkRecord.count
-      completed = worker_reports.sum { |report| report.fetch("benchmark_completed_cycles") }
-      steady_window = [Float(ENV.fetch("ACP_BENCH_STEADY_WINDOW", "30")), DURATION / 2].min
+      completed = worker_reports.sum { |report| report.fetch("measurement_completed_cycles") }
       worker_reports.each_with_index do |report, index|
         sample_path = File.join(sample_directory, "#{worker_count}-#{index + 1}.jsonl")
         samples = File.readlines(sample_path, chomp: true).map { |line| JSON.parse(line) }
-        baseline = samples.select { |sample| sample.fetch("at_seconds") <= DURATION - steady_window }
-                          .max_by { |sample| sample.fetch("at_seconds") }
         report["samples"] = samples
-        report["steady_state_start"] = baseline
       end
-      unless worker_reports.all? { |report| report["steady_state_start"] }
-        raise "benchmark duration did not include a steady-state sample for every worker"
+      windows = CapacityWorkload.boundaries(DURATION).each_cons(2).map do |left, right|
+        count = worker_reports.sum do |report|
+          start_sample = report.fetch("samples").find { |sample| sample.fetch("at_seconds") == left }
+          end_sample = report.fetch("samples").find { |sample| sample.fetch("at_seconds") == right }
+          end_sample.fetch("completed_cycles") - start_sample.fetch("completed_cycles")
+        end
+        rss = worker_reports.sum do |report|
+          samples = report.fetch("samples").select do |sample|
+            sample.fetch("at_seconds") > left && sample.fetch("at_seconds") <= right
+          end
+          samples.sum { |sample| sample.fetch("rss_megabytes") } / samples.length
+        end
+        { duration_seconds: right - left, completed_cycles: count,
+          throughput_cycles_per_second: count / (right - left), mean_rss_megabytes: rss }
       end
-
-      steady_start = worker_reports.sum { |report| report.dig("steady_state_start", "completed_cycles") || 0 }
-      steady_at = worker_reports.sum { |report| report.dig("steady_state_start", "at_seconds") || 0 } /
-                  [worker_reports.count { |report| report["steady_state_start"] }, 1].max
-      steady_end = worker_reports.sum { |report| report.fetch("elapsed_seconds") } / worker_reports.length
-      steady_duration = steady_end - steady_at
-      raise "benchmark duration did not include a steady-state sample" unless steady_duration.positive?
-
+      coverage = Hash.new(0)
+      worker_reports.each do |report|
+        report.fetch("successful_tenant_cycles").each { |id, count| coverage[id] += count }
+      end
+      rss_growth = windows.last[:mean_rss_megabytes] / windows.first[:mean_rss_megabytes] - 1
+      limits = {
+        max_pipeline_reservations: CapacityWorkload.integer("PIPELINE_CAPACITY", 4500),
+        max_active_cycles: CapacityWorkload.integer("PIPELINE_CAPACITY", 4500),
+        max_queued_batches: CapacityWorkload.integer("PIPELINE_CAPACITY", 4500),
+        max_active_fetches: CapacityWorkload.integer("FETCH_CONCURRENCY", 3500),
+        max_active_resolves: CapacityWorkload.integer("RESOLVE_CONCURRENCY", 16),
+        max_active_ingests: CapacityWorkload.integer("INGEST_CONCURRENCY", 16),
+        max_reserved_bytes: CapacityWorkload.integer("RETAINED_BYTE_CAPACITY", 268_435_456),
+        max_retained_bytes: CapacityWorkload.integer("RETAINED_BYTE_CAPACITY", 268_435_456)
+      }
+      gates = {
+        full_workload: TENANT_COUNT == 30_000 && windows.all? { |window| window[:duration_seconds] >= 60 },
+        throughput: windows.all? { |window| window[:throughput_cycles_per_second] >= 500 },
+        healthy_tenant_coverage: coverage.length == TENANT_COUNT && coverage.values.all? { |count| count >= 2 },
+        rss_growth: rss_growth < 0.10,
+        reservation_limits: worker_reports.all? do |report|
+          limits.all? { |name, limit| report.fetch("metrics").fetch(name.to_s) <= limit }
+        end,
+        released: worker_reports.all? do |report|
+          %w[reserved_bytes retained_bytes pipeline_reservations retry_reservations active_cycles
+             byte_budget_waiters active_fetches queued_batches active_ingests pending_acknowledgements].all? do |name|
+            report.fetch("metrics").fetch(name).zero?
+          end
+        end
+      }
       summary << {
         worker_count: worker_count,
         tenant_count: TENANT_COUNT,
         duration_seconds: elapsed.round(3),
         completed_cycles: completed,
-        throughput_cycles_per_second: (completed / elapsed).round(2),
-        steady_state_window_seconds: steady_duration.round(2),
-        steady_state_throughput_cycles_per_second: ((completed - steady_start) / steady_duration).round(2),
+        throughput_cycles_per_second: (completed / DURATION).round(2),
+        measurement_duration_seconds: DURATION,
+        drain_completed_cycles: worker_reports.sum { |report| report.fetch("benchmark_completed_cycles") } - completed,
+        post_warmup_windows: windows,
+        rss_growth_fraction: rss_growth,
+        healthy_tenants_progressed: coverage.length,
+        release_gates: gates,
+        release_passed: gates.values.all?,
         destination_rows: rows,
         initial_worker_rss_megabytes: initial_rss_by_pid.values.sum.round(2),
         ending_worker_rss_megabytes: ending_rss_by_pid.values.sum.round(2),
         peak_worker_rss_megabytes: rss_by_pid.values.sum.round(2),
         capacities_per_worker: {
-          fetch: Integer(ENV.fetch("ACP_BENCH_FETCH_CONCURRENCY", "2500")),
+          fetch: Integer(ENV.fetch("ACP_BENCH_FETCH_CONCURRENCY", "3500")),
+          resolve: Integer(ENV.fetch("ACP_BENCH_RESOLVE_CONCURRENCY", "16")),
           ingest: Integer(ENV.fetch("ACP_BENCH_INGEST_CONCURRENCY", "16")),
-          pipeline: Integer(ENV.fetch("ACP_BENCH_PIPELINE_CAPACITY", "2500"))
+          pipeline: Integer(ENV.fetch("ACP_BENCH_PIPELINE_CAPACITY", "4500")),
+          retained_bytes: CapacityWorkload.integer("RETAINED_BYTE_CAPACITY", 268_435_456)
+        },
+        postgres_pool_per_worker: {
+          acp_requirement: acp_connections,
+          configured: pool_size,
+          application_headroom: pool_size - acp_connections,
+          benchmark_headroom_allowance: pool_headroom
+        },
+        fleet_connection_budgets: {
+          postgres: worker_count * pool_size,
+          postgres_benchmark_driver: 1,
+          redis: worker_count * 24,
+          http_equivalent_requests: worker_count * CapacityWorkload.integer("FETCH_CONCURRENCY", 3500),
+          http_actual: if ENV["ACP_BENCH_HTTP_URL"]
+                         worker_count * CapacityWorkload.integer("FETCH_CONCURRENCY", 3500)
+                       else
+                         0
+                       end
         },
         workers: worker_reports
       }
@@ -195,8 +256,9 @@ begin
       redis.del(keys) unless keys.empty?
     end
   end
-  puts JSON.pretty_generate(
+  CapacityWorkload.write_report(
     benchmark: "redis-postgresql-multi-process",
+    workload: CapacityWorkload.describe,
     ruby: RUBY_DESCRIPTION,
     platform: RbConfig::CONFIG.fetch("host"),
     os_release: os_release,
@@ -214,6 +276,8 @@ begin
     pressure_metrics_lifetime: "worker lifetime, including startup and drain; final and sampled worker snapshots",
     results: summary
   )
+  require_release = ENV.fetch("ACP_BENCH_REQUIRE_RELEASE", TENANT_COUNT == 30_000 && DURATION >= 160 ? "1" : "0")
+  exit(1) if require_release == "1" && summary.none? { |result| result[:release_passed] }
 ensure
   redis&.close
   connection.drop_table(:acp_reliability_benchmark_records, if_exists: true)

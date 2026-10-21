@@ -155,6 +155,295 @@ class TestRuntime < Minitest::Test
     assert_equal 0, runtime.metrics[:active_fetches]
   end
 
+  def test_cancelling_a_budgeted_saturated_scan_restores_heap_and_reservations
+    visits = 0
+    program = build_program(tenants: [])
+    program.upstream_capacity 1
+    program.upstream_group do |_id|
+      visits += 1
+      "shared"
+    end
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+    admission = runtime.instance_variable_get(:@admission)
+    held = admission.fresh("held", admission.group_for("held"))
+    states = Array.new(500) do |id|
+      Acp::Runtime::State.new(tenant_id: id, due: 0, sequence: id, enabled: true)
+    end
+    runtime.instance_variable_set(:@states, states.to_h { |state| [state.tenant_id, state] })
+    heap = Acp::Runtime::DueHeap.new
+    states.each { |state| heap.push(state) }
+    constructor = Acp::CooperativeWork.method(:new)
+    clock = Object.new
+    ticks = 0
+    clock.define_singleton_method(:now) { ticks += 0.006 }
+    Acp::CooperativeWork.stub(:new, -> { constructor.call(clock: clock) }) do
+      Async do |root|
+        scanner = root.async { runtime.send(:next_admissible_state, heap) }
+        root.yield until visits > 1
+        scanner.stop
+        scanner.wait
+      end
+    end
+    restored = []
+    restored << heap.pop until heap.empty?
+
+    assert_operator visits, :<, 500
+    assert_equal states, restored
+    assert_equal 1, runtime.metrics[:pipeline_reservations]
+    admission.release(held)
+    assert_equal 0, runtime.metrics[:pipeline_reservations]
+  end
+
+  def test_byte_reservations_cover_fetch_ingestion_retry_and_acknowledgement
+    progress = MemoryProgress.new
+    gate = Async::Queue.new
+    stage = nil
+    attempts = 0
+    program = build_program(
+      interval: 0.001,
+      fetch: lambda do |_tenant, context|
+        stage = :fetch
+        gate.pop
+        context.validate_response_bytes!(10)
+        Acp::Batch.new(data: "payload", next_cursor: context.cursor + 1, size_bytes: 30)
+      end,
+      ingest: lambda do |_batch, _context|
+        attempts += 1
+        stage = :ingest
+        gate.pop
+        raise IOError, "retry" if attempts == 1
+      end,
+      ingest_retry: { on: IOError, max_attempts: 2, backoff: 0.001, max_backoff: 0.001, jitter: 0 }
+    )
+    program.retained_byte_capacity 50
+    program.max_batch_bytes 50
+    program.max_response_bytes 20
+    program.payload_estimate { |_id| 40 }
+    progress.define_singleton_method(:acknowledge) do |*args|
+      stage = :acknowledge
+      gate.pop
+      super(*args)
+    end
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(2) do
+        Kernel.sleep(0.001) until stage == :fetch
+        assert_equal 40, runtime.metrics[:reserved_bytes]
+        assert_equal 0, runtime.metrics[:retained_bytes]
+        gate.push(true)
+        Kernel.sleep(0.001) until stage == :ingest
+        assert_equal 30, runtime.metrics[:retained_bytes]
+        gate.push(true)
+        Kernel.sleep(0.001) until attempts == 2
+        assert_equal 40, runtime.metrics[:reserved_bytes]
+        gate.push(true)
+        Kernel.sleep(0.001) until stage == :acknowledge
+        assert_equal 30, runtime.metrics[:retained_bytes]
+        runtime.request_shutdown
+        gate.push(true)
+        runner.wait
+      end
+    end
+    assert_equal 1, runtime.metrics[:completed_cycles]
+    assert_equal 0, runtime.metrics[:reserved_bytes]
+    assert_equal 0, runtime.metrics[:retained_bytes]
+  end
+
+  def test_payload_failures_never_ingest_or_advance_and_release_bytes
+    [[60, 40, 100, :oversized_batches], [80, 40, 60, :oversized_batches], [45, 40, 100, :estimate_overflows],
+     [30, 110, 100, nil], [nil, 40, 100, nil]].each do |size, estimate, capacity, metric|
+      progress = MemoryProgress.new
+      errors = []
+      program = build_program(interval: 0.001, fetch: lambda do |_tenant, context|
+        Acp::Batch.new(data: [], next_cursor: context.cursor + 1, size_bytes: size)
+      end, ingest: ->(*) { flunk "oversized payload was ingested" })
+      program.max_batch_bytes 50
+      program.retained_byte_capacity capacity
+      program.payload_estimate { |_| estimate }
+      runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress,
+                                 on_error: ->(_id, error, _stage) { errors << error })
+      run_for(runtime, duration: 0.015)
+      assert_instance_of Acp::PayloadLimitError, errors.first
+      assert_empty progress.acknowledgements
+      assert_equal 0, runtime.metrics[:reserved_bytes]
+      assert_equal 0, runtime.metrics[:retained_bytes]
+      assert_operator runtime.metrics[metric], :>, 0 if metric
+    end
+  end
+
+  def test_cancellation_holds_bytes_until_ingestion_cleanup_returns
+    entered = false
+    cleanup_bytes = nil
+    runtime = nil
+    program = build_program(interval: 0.001, fetch: lambda do |_tenant, context|
+      Acp::Batch.new(data: "x", next_cursor: context.cursor, size_bytes: 20)
+    end, ingest: lambda do |*|
+      entered = true
+      begin
+        Kernel.sleep(60)
+      ensure
+        Async::Task.current.defer_stop do
+          Kernel.sleep(0.005)
+          cleanup_bytes = runtime.metrics.values_at(:reserved_bytes, :retained_bytes, :pipeline_reservations)
+        end
+      end
+    end)
+    program.max_batch_bytes 30
+    program.retained_byte_capacity 30
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(2) { Kernel.sleep(0.001) until entered }
+      runner.stop
+      runner.wait
+    end
+    assert_equal [30, 20, 1], cleanup_bytes
+    assert_equal 0, runtime.metrics[:reserved_bytes]
+    assert_equal 0, runtime.metrics[:retained_bytes]
+  end
+
+  # Gates and arrivals deliberately stay together to make FIFO ordering visible.
+  # rubocop:disable Metrics/BlockLength
+  def test_weighted_byte_admission_is_fifo_and_cancellation_unblocks_followers
+    metrics = {}
+    budget = Acp::ByteBudget.new(10, metrics)
+    order = []
+    Async do |root|
+      budget.acquire(6)
+      large = root.async do
+        budget.acquire(8)
+        order << :large
+        budget.release(8)
+      end
+      small = root.async do
+        budget.acquire(2)
+        order << :small
+        budget.release(2)
+      end
+      assert_empty order
+      large.stop
+      small.wait
+      assert_equal [:small], order
+      budget.release(6)
+      first = root.async do
+        budget.acquire(10)
+        Kernel.sleep(0.001)
+        budget.release(10)
+      end
+      second = root.async do
+        budget.acquire(9)
+        order << :second
+        budget.release(9)
+      end
+      third = root.async do
+        budget.acquire(1)
+        order << :third
+        budget.release(1)
+      end
+      [first, second, third].each(&:wait)
+    end
+    assert_equal %i[small second third], order
+    assert_equal 0, metrics[:reserved_bytes]
+    assert_equal 0, metrics[:byte_budget_waiters]
+    assert_equal 10, metrics[:max_reserved_bytes]
+  end
+  # rubocop:enable Metrics/BlockLength
+
+  def test_byte_blocked_fresh_work_cannot_deadlock_a_parked_retry
+    attempts = Hash.new(0)
+    progress = MemoryProgress.new
+    program = build_program(tenants: %w[a b c], interval: 60, fetch: lambda do |_tenant, context|
+      Acp::Batch.new(data: "payload", next_cursor: context.cursor + 1, size_bytes: 10)
+    end, ingest: lambda do |_batch, context|
+      attempts[context.tenant_id] += 1
+      raise IOError, "retry" if context.tenant_id == "a" && attempts["a"] == 1
+    end, ingest_retry: { on: IOError, max_attempts: 2, backoff: 0.01, max_backoff: 0.01 })
+    program.pipeline_capacity 1
+    program.retry_capacity 1
+    program.max_batch_bytes 10
+    program.retained_byte_capacity 10
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
+    runtime.define_singleton_method(:initial_offset) { |_| 0 }
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(2) { Kernel.sleep(0.001) until progress.acknowledgements.length == 3 }
+      runtime.request_shutdown
+      runner.wait
+    end
+    assert_equal 2, attempts["a"]
+    assert_equal 3, runtime.metrics[:completed_cycles]
+    assert_operator runtime.metrics[:byte_budget_waits], :>, 0
+    assert_equal 10, runtime.metrics[:max_reserved_bytes]
+    assert_equal 0, runtime.metrics[:reserved_bytes]
+  end
+
+  def test_byte_accounting_returns_to_baseline_after_exhaustion_and_lease_loss
+    %i[exhaustion lease_loss].each do |failure|
+      progress = MemoryProgress.new
+      ownership = Acp::LocalOwnership.new
+      if failure == :lease_loss
+        ownership.define_singleton_method(:renewal_interval) { |_| 0.01 }
+        ownership.define_singleton_method(:renew) { |*| false }
+      end
+      program = build_program(interval: 60, fetch: lambda do |_tenant, context|
+        Acp::Batch.new(data: "payload", next_cursor: context.cursor + 1, size_bytes: 20)
+      end, ingest: lambda do |*|
+        Kernel.sleep(60) if failure == :lease_loss
+        raise IOError, "exhausted"
+      end, ingest_retry: { on: IOError, max_attempts: 2 })
+      program.max_batch_bytes 20
+      program.retained_byte_capacity 20
+      runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress, ownership: ownership)
+      runtime.define_singleton_method(:initial_offset) { |_| 0 }
+      run_for(runtime, duration: 0.04)
+      assert_empty progress.acknowledgements
+      assert_equal 20, runtime.metrics[:max_retained_bytes]
+      assert_equal 0, runtime.metrics[:reserved_bytes]
+      assert_equal 0, runtime.metrics[:retained_bytes]
+    end
+  end
+
+  def test_response_limit_rejects_cumulative_wire_bytes
+    context = Acp::FetchContext.new(tenant_id: "a", cursor: Time.utc(2025), poll_id: "poll", max_response_bytes: 20)
+    assert_equal 20, context.validate_response_bytes!(20)
+    assert_raises(Acp::PayloadLimitError) { context.validate_response_bytes!(21) }
+    assert_raises(ArgumentError) { context.validate_response_bytes!(-1) }
+  end
+
+  def test_scheduler_weighted_admission_does_not_spawn_or_overtake_byte_waiters
+    started = []
+    gate = Async::Queue.new
+    sizes = { "a" => 6, "b" => 8, "c" => 2 }
+    program = build_program(tenants: sizes.keys, interval: 60, fetch: lambda do |tenant, context|
+      started << tenant
+      gate.pop
+      Acp::Batch.new(data: "payload", next_cursor: context.cursor, size_bytes: sizes.fetch(tenant))
+    end)
+    program.pipeline_capacity 3
+    program.max_batch_bytes 10
+    program.retained_byte_capacity 10
+    program.payload_estimate { |tenant| sizes.fetch(tenant) }
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+    runtime.define_singleton_method(:initial_offset) { |_| 0 }
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(2) do
+        Kernel.sleep(0.001) until started == ["a"]
+        assert_equal 1, runtime.metrics[:active_cycles]
+        assert_equal 6, runtime.metrics[:reserved_bytes]
+        gate.push(true)
+        Kernel.sleep(0.001) until started.length == 3
+        assert_equal %w[a b c], started
+        assert_equal 10, runtime.metrics[:reserved_bytes]
+        runtime.request_shutdown
+        2.times { gate.push(true) }
+        runner.wait
+      end
+    end
+    assert_equal 0, runtime.metrics[:reserved_bytes]
+  end
+
   def test_successful_cycle_uses_max_of_interval_and_acknowledgement_time
     [10, 80].each do |fetch_duration|
       clock = FakeClock.new
@@ -986,6 +1275,293 @@ class TestRuntime < Minitest::Test
     assert_equal 1, pressure[:fetch_service][:count]
     assert_equal 2, pressure[:fetch_service][:sum]
     assert_equal 0, runtime.metrics[:active_fetches]
+  end
+
+  def isolated_runtime(program, offset: ->(_id) { 0 }, **options)
+    program.pipeline_capacity 2
+    program.retry_capacity 2
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, **options)
+    runtime.define_singleton_method(:initial_offset, &offset)
+    runtime
+  end
+
+  def assert_reservations_released(runtime)
+    %i[active_cycles active_fetches active_ingests queued_batches pipeline_reservations
+       retry_reservations parked_cycles upstream_groups retained_batches pending_acknowledgements].each do |name|
+      assert_equal 0, runtime.metrics.fetch(name), name.to_s
+    end
+  end
+
+  def test_full_fetch_retry_saturation_admits_healthy_work_before_backoff_expires
+    attempts = []
+    healthy = Async::Queue.new
+    program = build_program(tenants: %w[a b healthy], interval: 60, fetch: lambda do |tenant, context|
+      attempts << [tenant, context.attempt]
+      raise IOError if tenant != "healthy"
+
+      healthy.push(true)
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end, fetch_retry: { on: IOError, max_attempts: 3, backoff: 10, max_backoff: 10 })
+    runtime = isolated_runtime(program)
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(1) { healthy.pop }
+      assert_equal [["a", 1], ["b", 1], ["healthy", 1]], attempts
+      assert_equal 2, runtime.metrics[:parked_cycles]
+      assert_equal 0, runtime.metrics[:active_fetches]
+      runner.stop
+    end.wait
+    assert_operator runtime.metrics[:max_active_cycles], :<=, 4
+    assert_operator runtime.metrics[:max_pipeline_reservations], :<=, 2
+    assert_equal 2, runtime.metrics[:max_retry_reservations]
+    assert_reservations_released(runtime)
+  end
+
+  # Follow identity across both independently retried stages and fresh arrivals.
+  # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/BlockLength
+  def test_retry_and_fresh_work_both_progress_with_stable_fetch_and_ingestion_identity
+    %i[fetch ingest].each do |stage|
+      calls = []
+      resolved = []
+      finished = Async::Queue.new
+      callback = lambda do |value, context|
+        calls << [context.tenant_id, context.attempt, context.poll_id, context.cursor, value.object_id]
+        Kernel.sleep(0.002)
+        raise IOError if context.tenant_id == "a" && context.attempt < 3
+
+        finished.push(context.tenant_id)
+        Acp::Batch.new(data: [], next_cursor: context.cursor) if stage == :fetch
+      end
+      program = build_program(tenants: ("a".."z").to_a, interval: 60,
+                              **{ stage => callback, :"#{stage}_retry" => {
+                                on: IOError, max_attempts: 3, backoff: 0.003, max_backoff: 0.003
+                              } })
+      program.resolve do |id|
+        resolved << id
+        id.dup
+      end
+      runtime = isolated_runtime(program)
+      Async do |root|
+        runner = root.async { runtime.run }
+        root.with_timeout(1) { finished.pop until calls.any? { |id, attempt, *| id == "a" && attempt == 3 } }
+        runner.stop
+      end.wait
+      retries = calls.select { |call| call.first == "a" }
+      assert_equal([1, 2, 3], retries.map { |call| call[1] })
+      assert_equal 1, retries.map { |call| call[2..] }.uniq.length
+      assert_equal 1, resolved.count("a")
+      assert_operator calls.index(retries.last), :<, 25
+      assert(calls[1...calls.index(retries.last)].any? { |call| call.first != "a" })
+      assert_operator runtime.metrics[:max_active_cycles], :<=, 4
+      assert_reservations_released(runtime)
+    end
+  end
+  # rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity, Metrics/BlockLength
+
+  def test_saturated_group_leaves_pipeline_capacity_for_another_group
+    started = Async::Queue.new
+    gate = Async::Queue.new
+    program = build_program(tenants: %w[bad-a bad-b good], interval: 60, fetch: lambda do |id, context|
+      started.push(id)
+      gate.pop
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end)
+    program.upstream_group { |id| id.split("-").first }
+    program.upstream_capacity 1
+    runtime = isolated_runtime(program)
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(1) { assert_equal %w[bad-a good], [started.pop, started.pop] }
+      assert_equal 2, runtime.metrics[:active_cycles]
+      assert_equal 2, runtime.metrics[:upstream_groups]
+      runner.stop
+    end.wait
+    assert_reservations_released(runtime)
+  end
+
+  def test_all_failed_upstreams_exhaust_a_finite_retry_budget_without_waiting_for_backoff
+    failures = 0
+    program = build_program(tenants: (1..20).to_a, interval: 60, fetch: lambda do |*|
+      failures += 1
+      raise IOError
+    end, fetch_retry: { on: IOError, max_attempts: 3, backoff: 10, max_backoff: 10 })
+    runtime = isolated_runtime(program)
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(1) { Kernel.sleep(0.001) until failures == 20 }
+      assert_equal 2, runtime.metrics[:parked_cycles]
+      assert_equal 18, runtime.metrics[:retry_overflows]
+      runner.stop
+    end.wait
+    assert_operator runtime.metrics[:max_active_cycles], :<=, 4
+    assert_reservations_released(runtime)
+  end
+
+  def test_ownership_loss_while_parked_discards_the_batch_without_resuming_ingestion
+    calls = 0
+    released = Async::Queue.new
+    ownership = Acp::LocalOwnership.new
+    ownership.define_singleton_method(:renewal_interval) { |_| 0.01 }
+    ownership.define_singleton_method(:renew) { |*| false }
+    ownership.define_singleton_method(:release) { |*| released.push(true) }
+    program = build_program(interval: 60, ingest: lambda do |*|
+      calls += 1
+      raise IOError
+    end, ingest_retry: { on: IOError, max_attempts: 3, backoff: 10, max_backoff: 10 })
+    runtime = isolated_runtime(program, ownership: ownership)
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(1) { released.pop }
+      assert_equal 1, calls
+      assert_equal 1, runtime.metrics[:renewal_deadline_misses]
+      runner.stop
+    end.wait
+    assert_reservations_released(runtime)
+  end
+
+  def test_resolution_and_initial_cursor_deadlines_include_queue_and_callback_work
+    %i[resolve initial_cursor].each do |stage|
+      unwound = 0
+      program = build_program(tenants: %w[a b], interval: 60)
+      program.public_send(:"#{stage}_timeout", 0.01)
+      program.resolve_concurrency 1
+      program.public_send(stage) do |_id|
+        Kernel.sleep(60)
+      ensure
+        unwound += 1
+      end
+      runtime = isolated_runtime(program)
+      run_for(runtime, duration: 0.04)
+      assert_operator unwound, :>=, 1
+      assert_operator unwound, :<=, 2
+      assert_equal 0, runtime.metrics[:completed_cycles]
+      assert_reservations_released(runtime)
+    end
+  end
+
+  def test_lost_successful_acknowledgement_response_never_replays_confirmed_ingestion
+    progress = MemoryProgress.new
+    attempts = 0
+    progress.define_singleton_method(:acknowledge) do |*args|
+      super(*args)
+      attempts += 1
+      raise IOError if attempts == 1
+    end
+    ingestions = 0
+    program = build_program(interval: 60, ingest: ->(*) { ingestions += 1 })
+    program.acknowledge_retry on: IOError, max_attempts: 3
+    program.retry_capacity 2
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
+    runtime.define_singleton_method(:initial_offset) { |_| 0 }
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(1) { Kernel.sleep(0.001) until runtime.metrics[:completed_cycles] == 1 }
+      runner.stop
+    end.wait
+    assert_equal 2, attempts
+    assert_equal 1, ingestions
+    assert_equal 1, progress.acknowledgements.length
+    assert_reservations_released(runtime)
+  end
+
+  def test_acknowledgement_outage_stops_admission_and_drain_cancels_stalled_commands_and_cleanup
+    ingestions = 0
+    unwound = 0
+    progress = MemoryProgress.new
+    progress.define_singleton_method(:acknowledge) do |*|
+      Kernel.sleep(60)
+    ensure
+      unwound += 1
+    end
+    ownership = Acp::LocalOwnership.new
+    ownership.define_singleton_method(:release) { |*| Kernel.sleep(60) }
+    program = build_program(tenants: (1..20).to_a, interval: 60, ingest: ->(*) { ingestions += 1 })
+    program.coordination_timeout 0.01
+    program.acknowledge_retry on: Timeout::Error, max_attempts: 3, backoff: 0.001, max_backoff: 0.001
+    program.retry_capacity 2
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress, ownership: ownership)
+    runtime.define_singleton_method(:initial_offset) { |_| 0 }
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(1) { Kernel.sleep(0.001) until unwound >= 3 }
+      assert_equal 3, ingestions
+      assert_equal 3, runtime.metrics[:pending_acknowledgements]
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      runtime.request_shutdown(timeout: 0.01)
+      root.with_timeout(0.1) { runner.wait }
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.1
+    end.wait
+    assert_equal 3, runtime.metrics[:max_pending_acknowledgements]
+    assert_reservations_released(runtime)
+  end
+
+  def test_retry_readmission_deadline_expires_while_pipeline_is_busy
+    calls = []
+    gate = Async::Queue.new
+    policy = { on: IOError, max_attempts: 3, max_elapsed: 0.02, backoff: 0.001, max_backoff: 0.001 }
+    program = build_program(tenants: %w[retry busy], interval: 60, fetch: lambda do |tenant, context|
+      calls << [tenant, context.attempt]
+      raise IOError if tenant == "retry"
+
+      gate.pop
+    end, fetch_retry: policy)
+    program.pipeline_capacity 1
+    program.retry_capacity 1
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+    runtime.define_singleton_method(:initial_offset) { |_| 0 }
+    run_for(runtime, duration: 0.04)
+    assert_equal [["retry", 1], ["busy", 1]], calls
+    assert_equal 1, runtime.metrics[:pressure][:retry_admission_wait][:outcomes][:timeout]
+    assert_reservations_released(runtime)
+  end
+
+  def test_graceful_shutdown_cancels_parked_ingestion_and_eligible_retry_waits
+    %i[backoff readmission].each do |wait_class|
+      calls = 0
+      policy = { on: IOError, max_attempts: 3, backoff: wait_class == :backoff ? 10 : 0.001, max_backoff: 10 }
+      program = build_program(tenants: %w[retry busy], interval: 60, ingest: lambda do |_batch, context|
+        calls += 1
+        raise IOError if context.tenant_id == "retry"
+
+        Kernel.sleep(60)
+      end, ingest_retry: policy)
+      program.pipeline_capacity 1
+      program.retry_capacity 1
+      runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new)
+      runtime.define_singleton_method(:initial_offset) { |_| 0 }
+      Async do |root|
+        runner = root.async { runtime.run }
+        root.with_timeout(1) { Kernel.sleep(0.001) until calls == 2 }
+        Kernel.sleep(0.005) if wait_class == :readmission
+        assert_equal 1, runtime.metrics[:parked_cycles]
+        assert_equal 2, runtime.metrics[:retained_batches]
+        runtime.request_shutdown(timeout: 0.01)
+        root.with_timeout(0.1) { runner.wait }
+      end.wait
+      assert_equal 2, calls
+      assert_reservations_released(runtime)
+    end
+  end
+
+  def test_future_due_work_in_another_group_is_not_hidden_by_a_saturated_group
+    started = Async::Queue.new
+    program = build_program(tenants: %w[bad-a bad-b good], interval: 60, fetch: lambda do |id, context|
+      if id == "good"
+        started.push(true)
+        Acp::Batch.new(data: [], next_cursor: context.cursor)
+      else
+        Kernel.sleep(60)
+      end
+    end)
+    program.upstream_group { |id| id.split("-").first }
+    program.upstream_capacity 1
+    runtime = isolated_runtime(program, offset: ->(id) { id == "good" ? 0.01 : 0 })
+    Async do |root|
+      runner = root.async { runtime.run }
+      root.with_timeout(0.1) { started.pop }
+      runner.stop
+    end.wait
+    assert_reservations_released(runtime)
   end
 end
 # rubocop:enable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize, Metrics/ParameterLists

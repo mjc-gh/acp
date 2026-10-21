@@ -4,8 +4,10 @@ module Acp
   # Class-level DSL for declaring one tenant polling program.
   class Program
     SETTING_NAMES = %i[interval fetch_concurrency ingest_concurrency pipeline_capacity discovery_interval
-                       retry_cooldown resolve_concurrency].freeze
-    CALLBACK_NAMES = %i[tenants initial_cursor resolve fetch ingest].freeze
+                       retry_cooldown resolve_concurrency retry_capacity upstream_capacity
+                       resolve_timeout initial_cursor_timeout coordination_timeout cleanup_timeout
+                       discovery_batch_size retained_byte_capacity max_batch_bytes max_response_bytes].freeze
+    CALLBACK_NAMES = %i[tenants tenants_page initial_cursor resolve fetch ingest upstream_group payload_estimate].freeze
 
     class << self
       def inherited(subclass)
@@ -15,6 +17,7 @@ module Acp
         subclass.instance_variable_set(:@program_name, @program_name)
         subclass.instance_variable_set(:@fetch_retry, @fetch_retry)
         subclass.instance_variable_set(:@ingest_retry, @ingest_retry)
+        subclass.instance_variable_set(:@acknowledge_retry, @acknowledge_retry)
       end
 
       SETTING_NAMES.each do |setting|
@@ -30,6 +33,9 @@ module Acp
           raise DefinitionError, "#{callback_name} requires a block" unless block
 
           callbacks[callback_name] = block
+          next unless %i[tenants tenants_page].include?(callback_name)
+
+          callbacks.delete(callback_name == :tenants ? :tenants_page : :tenants)
         end
       end
 
@@ -47,6 +53,10 @@ module Acp
         @ingest_retry = retry_policy(policy, options)
       end
 
+      def acknowledge_retry(policy = nil, **options)
+        @acknowledge_retry = retry_policy(policy, options)
+      end
+
       def configuration
         effective_name = @program_name || name
         Configuration.new(
@@ -54,7 +64,8 @@ module Acp
           settings: settings,
           callbacks: callbacks,
           fetch_retry: @fetch_retry || RetryPolicy.new,
-          ingest_retry: @ingest_retry || RetryPolicy.new
+          ingest_retry: @ingest_retry || RetryPolicy.new,
+          acknowledge_retry: @acknowledge_retry
         )
       end
 

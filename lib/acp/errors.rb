@@ -14,4 +14,5 @@ module Acp
   class ProgressConflictError < Error; end
   class MissingProgressError < Error; end
   class StageTimeoutError < Timeout::Error; end
+  class PayloadLimitError < Error; end
 end

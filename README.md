@@ -52,13 +52,21 @@ waits. The fetch callback receives a `FetchContext` containing `tenant_id`, the
 committed `cursor`, stable cycle `poll_id`, and one-based `attempt`. Ingestion
 receives the same identity and cursor via `IngestContext`.
 
+Discovery registrations are buffered in `discovery_batch_size` chunks (default
+**256**, configurable from 1 through **1024**). For N distinct emitted IDs and
+batch size B, Redis registration requires `ceil(N / B)` atomic operations and
+membership revision increments, plus one revision increment on completion. The
+last partial chunk is flushed before completion; an empty pass completes without
+registration. Duplicates are ignored by the runtime. Discovery retains scheduler
+records for all distinct IDs, but the registration buffer holds at most B IDs.
+
 The runtime calls `initial_cursor` only when initializing a tenant with no
 legitimate prior progress. Missing progress for a previously known tenant needs
 an explicit recovery policy. Generate one ID per cycle with
 `Acp::Context.new_poll_id` and reuse it across fetch/ingest contexts and retries;
 increment `attempt` for the stage being retried.
 
-`pipeline_capacity` bounds the complete path from fetch reservation through
+By default, `pipeline_capacity` bounds the complete path from fetch reservation through
 ingestion and progress acknowledgement. Thus effective fetch concurrency is
 `min(fetch_concurrency, pipeline_capacity)`. The ingestion callback must not
 share unsafe mutable state with other cycles. The consumer owns connection-pool
@@ -135,11 +143,62 @@ pool. Only a confirmed commit allows progress acknowledgement. An explicit
 `ActiveRecord::Rollback`, an ambient transaction, or a commit exception cannot
 be acknowledged as success.
 
+### Page-scoped discovery
+
+Legacy `tenants { |emit| ... }` callbacks retain their original checkout scope:
+Rails holds the selected connection throughout enumeration, including Redis I/O
+when a registration buffer fills. To release it between database pages and
+before Redis registration, replace `tenants` with `tenants_page`:
+
+```ruby
+discovery_batch_size 256
+tenants_page do |after_id, limit|
+  ids = Tenant.active.where("id > ?", after_id || 0)
+    .order(:id).limit(limit).pluck(:id)
+  [ids, ids.length == limit ? ids.last : nil]
+end
+```
+
+The callback receives an opaque cursor (initially nil) and a maximum page size.
+Return `[enumerable_ids, next_cursor]`; a nil next cursor ends discovery **after**
+processing that page. Empty final pages are valid. Use stable keyset ordering;
+nonterminal cursors must advance. A page exceeding the supplied limit raises an
+error and cannot complete the generation. Declaring either discovery callback
+replaces the other, including inherited callbacks.
+
+Each page callback runs in its own Rails executor/selected-pool checkout. Rails
+also materializes a returned lazy enumerable inside that checkout; only detached
+IDs leave it. Redis registration runs after both scopes have exited. Pages run
+sequentially, so discovery still uses at most one selected-pool
+connection at a time and does not add page-level tasks. Runtime-owned
+page storage and the separate registration buffer each hold at most B IDs;
+application-owned query results/cursors need their own size bounds. Without the
+Rails integration, the runtime materializes the enumerable after callback return,
+so custom connection wrappers should materialize IDs before releasing their own
+checkout, or acquire their connection inside the enumerable. Work using additional
+pools remains application-managed. Applications relying on a connection spanning
+the entire enumeration should retain the legacy callback until migrated.
+
 The selected pool must have at least
-`min(resolve_concurrency, pipeline_capacity) + min(ingest_concurrency, pipeline_capacity) + 1`
-connections for simultaneous resolution, ingestion, and periodic discovery.
-Add headroom for web requests, jobs, and other users of that same pool. Initial
-discovery runs before polling begins. A consumer must write destination rows
+`min(pipeline_capacity, resolve_concurrency + ingest_concurrency) + 1`
+connections for Acp-owned checkouts. Limits 8/8/8 require 9 connections;
+100/5/7 require 13; 1/5/7 require 2 (pipeline/resolve/ingest).
+Each runnable cycle holds at most one selected-pool checkout for cursor
+initialization, resolution, or ingestion. Fetch/network and progress waits hold
+none under the detached-data callback contract. Initial-cursor callbacks share
+the resolution semaphore. One discovery callback can overlap the cycles;
+initial discovery runs before polling but is conservatively included.
+Parked retries hold no checkout and must regain a pipeline slot before resuming;
+discovery pages remain sequential. Checkout and executor scopes unwind before
+reservation release, including errors, cancellation, and lease loss. See the
+[checkout proof and revalidation rules](benchmark/rails-connection-budget-proof.md) and
+[exact-bound tests and sizing smoke evidence](benchmark/rails-connection-budget-evidence.md).
+
+Add application headroom for web requests, jobs, nested consumer thread/fiber
+fanout, and other users of that same pool. Other pools need separate budgets.
+Callbacks must return detached data and must not retain connections or spawn
+database work outliving their scope. Preexisting application checkouts remain
+application-owned and need their own headroom. A consumer must write destination rows
 through the selected pool; writes to another database and transaction work spawned
 in consumer-created threads
 are outside the atomic batch guarantee. The gem creates neither destination nor
@@ -206,6 +265,174 @@ commit, progress acknowledgement is retried independently until success,
 ownership loss, or cancellation; exhausting ingestion retries does not refetch
 an already committed batch in the same cycle.
 
+### Retry admission isolation and upstream bulkheads
+
+Isolation is opt-in; these settings can be added to a program definition:
+
+```ruby
+pipeline_capacity 100
+retry_capacity 100
+upstream_capacity 25
+upstream_group { |tenant_id| ROUTING.fetch(tenant_id) } # opaque, nonsecret group ID
+resolve_timeout 10
+initial_cursor_timeout 15
+coordination_timeout 5
+cleanup_timeout 1
+acknowledge_retry on: [IOError, Timeout::Error], max_attempts: 4,
+  timeout: 5, backoff: 0.5, max_backoff: 5
+```
+
+`retry_capacity` defaults to **0**, preserving coupled pipeline admission. With
+P pipeline slots and R retry slots, a failed fetch or ingestion parks its cycle
+during backoff and releases its pipeline slot. It retains one retry slot through
+the rest of that cycle, including resumed work. Resumption requires a pipeline
+slot again. Eligible retries and fresh work alternate; due-time/FIFO ordering
+within each class prevents either class from starving the other. A full retry
+budget ends a newly failing uncommitted cycle and reschedules it after
+`retry_cooldown`, incrementing `retry_overflows`.
+
+The aggregate bound is **P + R cycle tasks**, contexts, lease heartbeats, and
+retained batches. At most P cycles hold runnable pipeline slots, including
+queued ingestion and pending acknowledgements. Enable the separate byte budget
+below to bound accounted payload reservations across both P and R. Poll ID,
+cursor, resolved value, and the materialized ingestion batch keep
+their identity across parking. Leases continue renewing while parked; resumed
+attempts validate ownership before invoking callbacks. Ingestion concurrency,
+resolution concurrency, and the Rails pool budget above remain unchanged.
+Including lease heartbeats, I fixed ingestion workers and their callback tasks,
+and background tasks, the runtime-owned task bound is **2(P + R) + 2I + 6**;
+the caller's task and consumer-created tasks are excluded. The event queue is
+bounded at 2(P + R) + 1 messages.
+
+`upstream_group` is an optional synchronous, nonblocking routing callback given
+the tenant ID **before admission**, independent of credential resolution. Return
+a nonempty String of at most 256 bytes identifying the upstream/credential group;
+use an opaque ID rather than credentials. Only its SHA-256 digest is retained in
+reservation bookkeeping, and no group keys are emitted in diagnostics.
+`upstream_capacity` defaults to P and limits each group's pipeline occupancy
+across every stage. Set it below P to leave capacity for other groups. Saturated
+groups wait as scheduler records, without creating tasks. Group bookkeeping has
+at most P entries and removes idle entries. Group routing must stay stable during
+a cycle; routing changes take effect on the next cycle.
+
+Acknowledgements retain pipeline slots, including retry backoff. A prolonged
+coordination outage therefore stops new admission at P committed pending
+acknowledgements, with at most R other parked cycles. Confirmed ingestion is
+never rerun to retry an acknowledgement. `acknowledge_retry` is independent of
+`ingest_retry`; if omitted it inherits that policy for compatibility. After its
+retry window is exhausted, acknowledgement keeps trying at `retry_cooldown`
+until success, ownership loss, or cancellation. Its `timeout` bounds an attempt;
+its `max_elapsed` selects the retry window, not a deadline that abandons a commit.
+
+`resolve_timeout` includes resolution semaphore checkout and callback service.
+`initial_cursor_timeout` covers the complete initial cursor operation, including
+progress reads, resolution checkout, callback, and initialization writes.
+`coordination_timeout` bounds **each adapter method**, including Redis checkout
+and command I/O. These three settings default to nil (unlimited). Retry `timeout`
+includes stage queue waits; `max_elapsed` additionally includes backoff and retry
+readmission. Cleanup uses `cleanup_timeout` (default **1 second**), capped by the
+remaining shutdown drain budget. Once the drain deadline expires, only a
+nonblocking ownership release can finish; an unsuccessful release expires by TTL.
+All budgets are cooperative: callbacks and cleanup must yield and propagate
+cancellation. Callback unwinding completes before reservations are released.
+Immediate cancellation shares one `cleanup_timeout` deadline across releases.
+
+Metrics expose current and `max_` peaks for `pipeline_reservations`,
+`retry_reservations`, `parked_cycles`, `retained_batches`,
+`pending_acknowledgements`, and `upstream_groups`. `active_cycles` now includes
+parked cycles; `pipeline_utilization` counts pipeline reservations only.
+`pressure[:retry_admission_wait]` measures eligible retry queue time.
+
+### Payload and complete-pipeline budgets
+
+Memory limits are opt-in and inherited with the program definition:
+
+```ruby
+max_response_bytes 32 * 1024
+max_batch_bytes 64 * 1024
+retained_byte_capacity 256 * 1024 * 1024
+payload_estimate { |_tenant_id| 64 * 1024 } # optional; defaults to max_batch_bytes
+```
+
+`retained_byte_capacity` requires `max_batch_bytes`. Limits are positive integer
+bytes; `Batch.new(data:, next_cursor:, size_bytes:)` accepts a nonnegative integer
+size. A batch limit requires every returned batch to declare `size_bytes`.
+Without a batch limit/budget this metadata remains optional for compatibility.
+
+The consumer estimates the retained Ruby object graph, including strings,
+arrays/hashes, record metadata, and copies retained by ingestion. The pre-fetch
+estimate must additionally cover peak fetch-local materialization, wire buffers,
+decoding temporaries, and any callback-local copies. It is a synchronous,
+nonblocking, stable per-cycle callback given the tenant ID before resolution;
+use a conservative upper bound when the size is unknown. The scheduler reserves
+the estimate **before creating the cycle task**. Byte-blocked tenants wait as
+scheduler records, ordered by due time/FIFO among eligible groups; smaller work
+cannot repeatedly overtake the oldest eligible large request. This deliberately
+allows head-of-line blocking. Retries retain their byte reservation while parked,
+so readmission needs only a pipeline slot and cannot deadlock behind byte waiters.
+
+Reservations cover resolution, fetch-local work, queued/active ingestion,
+ingestion retry backoff, and pending acknowledgement, and are held at their full
+estimate until the cycle and all ingestion callback cleanup have unwound. They
+are not shrunk to the accepted batch size. Ownership skips, failures, retry
+exhaustion, lease loss, and cancellation release the reservation. Callbacks must
+propagate cancellation and must not retain batch references in detached tasks,
+global caches, or other work that outlives their callback. Mutations/copies must
+stay within the estimate.
+
+Wire length is **not decoded Ruby memory**: compression, JSON object overhead,
+encoding, SQL serialization, and temporary copies can multiply it. Consumers
+must enforce the response limit while streaming, using
+`context.validate_response_bytes!(cumulative_bytes)` **before retaining each
+chunk**, and bound decoding against `context.reserved_bytes`. This helper raises
+`Acp::PayloadLimitError`; configuring `max_response_bytes` does not intercept an
+arbitrary HTTP client's reads. For larger results, use bounded streaming/spooling
+with callback-owned cleanup, or split the upstream page before materialization.
+
+After fetch returns, Acp rejects missing size metadata, a batch above
+`max_batch_bytes`, or a batch above its reservation. It never tries to grow a held
+reservation. An estimate above the entire budget fails immediately instead of
+waiting. These are recoverable tenant failures rescheduled after `retry_cooldown`,
+without ingestion or progress advancement and without retrying the rejected
+payload in that cycle. Post-materialization rejection cannot undo the allocation:
+**the budget bounds accounted reservations, not total RSS or arbitrary consumer
+allocations**. A strict payload-memory bound requires the streaming/decoder
+contract above. Ruby heaps, GC retention, task/tenant state, native libraries,
+connection buffers, and application memory need separate process headroom.
+
+Metrics expose `reserved_bytes`/`max_reserved_bytes` (including fetch-local
+allowance), `retained_bytes`/`max_retained_bytes` (declared sizes of accepted
+batches through acknowledgement), `byte_budget_waits`, current/peak
+`byte_budget_waiters`, and `pressure.byte_budget_wait`. Unreturned fetch-local
+objects and rejected oversized allocations are represented by their reservation,
+not measured as accepted retained bytes. `payload_rejections` counts rejected
+cycles; `oversized_batches` and `estimate_overflows` distinguish batch-limit and
+estimate failures. Stage count peaks include `max_active_resolves`, fetches,
+ingests, cycle tasks, and pipeline/retry reservations. `pressure.pipeline_residence`
+includes callback and ownership cleanup plus completion-event delivery, up to
+final reservation release; it complements the shorter `cycle_duration`.
+
+For sizing, start with **slots = ceil(target cycles/sec per worker × mean stage
+residence seconds / target utilization)**. For fetch/ingest/resolve, include the
+expected number of attempts per cycle; initial cursor resolution is extra startup
+work. For pipeline sizing use the **entire admitted-cycle residence**, including
+queued ingestion, retry/backoff, cursor reads, and acknowledgement. With retry
+isolation, also size the separately parked R occupancy; the aggregate task bound
+remains P + R. Validate tails and renewal slack separately from these mean-value
+estimates. An indefinitely unavailable acknowledgement adapter has no finite
+sustainable capacity; count and byte admission provide backpressure.
+
+The named local `capacity-local-headroom` workload measured mean fetch 20.19 ms,
+ingestion 10.14 ms, acknowledgement 5.15 ms, and complete pipeline 38.71 ms.
+At 550 cycles/sec and a **75% target utilization**, the formula suggests 15 fetch,
+8 ingestion, and 29 pipeline slots. The tested 16/8/32 configuration delivered
+553.1 and 546.9 cycles/sec in equal local windows, with admission-lag p95 ≤1 ms.
+Its 32 × 64 KiB reservations need 2 MiB, independently of the larger configured
+256 MiB ceiling. This is local smoke evidence, not a service-fleet capacity claim.
+The independent sweeps demonstrate useful overlap at P=32 and ingestion
+saturation beyond it. See [capacity/memory evidence](benchmark/capacity-memory-evidence.md)
+for commands, full service failures, sizing assumptions, and connection budgets.
+
 ## Local runtime
 
 Run a validated program inside an Async task and provide a progress adapter:
@@ -235,6 +462,106 @@ An optional `on_error` callable receives `(tenant_id, error, stage)` for
 recoverable tenant and acknowledgement failures. Tests and embedded runtimes can
 inject a clock implementing `now`, `sleep(duration)`, and `wait(duration) { ... }`;
 the default clock uses monotonic process time and Async-aware waits.
+
+## Reactor responsiveness and telemetry
+
+Runtime discovery, admission scans, state/heap construction, membership and
+assignment transformations check elapsed work at invariant-safe boundaries and
+cooperate after **5 ms**. A heap insertion/removal and an admission/reservation
+mutation finish before yielding. Tenant resume uses indexed O(log n) heap deletion.
+An individual callback, allocation, GC pause, native call, or TLS handshake can
+exceed the target; it is a cooperative work budget, not a preemptive deadline.
+Metrics snapshots of tenant state are advisory and may span yields.
+
+Use scheduler-compatible socket/database clients with exclusive checkout per
+fiber, bounded pools, streaming response limits, and finite connection/read/write
+timeouts. Cancellation must unwind the request, close/discard an interrupted
+connection, and propagate to Acp before its reservation can be released. Finish
+the runtime drain before closing persistent clients. The measured reference client
+in `benchmark/http_workload.rb` verifies TLS, reuses connections for 30 seconds,
+disables automatic request replay, and closes clients on exceptions/cancellation.
+
+`ActiveSupport::Notifications` subscribers and `on_error` run **synchronously on
+the calling reactor**. Subscriber errors are swallowed by emission; `on_error`
+errors propagate. Their elapsed times appear in
+`pressure.notification_service` and `pressure.error_handler_service`, alongside
+`reactor_lag`, renewal wakeup/service times and Redis lease-renewal slack. Slow
+logging/export in either hook can delay every callback and renewal; separate
+Redis connection pools do not prevent CPU/native reactor stalls.
+
+For I/O-heavy telemetry, embedded runtimes can use a bounded exporter directly:
+
+```ruby
+exporter = Acp::BoundedExporter.new(capacity: 256, max_event_bytes: 4096) do |json|
+  telemetry_client.write(json) # thread-owned client with finite I/O deadlines
+end
+runtime = Acp::Runtime.new(configuration: TenantSync.configuration,
+  progress: progress, exporter: exporter)
+begin
+  Async { runtime.run }.wait
+ensure
+  exporter.close(timeout: 0.5)
+end
+```
+
+One consumer thread owns copied, frozen JSON strings. Storage is at most 256
+pending records plus one in flight, each at most 4096 bytes (plus Ruby overhead).
+`offer` never waits for queue capacity: **drop the new event** when full, oversized,
+or closed. Serialization occurs on the producer, so offer small, flat metadata,
+never batches, models, or exception objects. `metrics` exposes accepted, dropped,
+exported, error and queued counts; runtime snapshots expose these as `telemetry`.
+For a Notifications bridge, the synchronous subscriber should only call `offer`.
+
+The caller owns the exporter's lifecycle. `close(timeout:)` rejects new events,
+waits cooperatively up to its timeout, and discards remaining queued events.
+It returns false if a consumer call is still executing; that call may finish later.
+It is never killed and cannot hold a polling reservation or mutate destination
+state. Export errors increment a counter and consumption continues without an
+unbounded retry buffer. No Rails executor or database context is inherited by the
+thread: the consumer must establish its own executor/connection scope if needed.
+Its I/O must release the GVL and have its own timeout. Native calls holding the GVL
+and CPU-heavy exporters still require process isolation. Do not call `close` from
+the consumer itself. Export drain is an explicit additional shutdown budget.
+
+### CPU work, offload boundary, and measured gates
+
+CRuby's GVL prevents Ruby CPU callbacks from running in parallel inside one worker;
+more fibers/threads and more connection slots do not provide CPU parallelism.
+Independent worker processes can use independent cores. The measured 50 ms
+blocking parse delivered **19.5 → 40.1 cycles/sec** with one → two processes,
+using **10.01 → 19.94 CPU seconds** over 10 seconds; reactor lag still failed the
+supported responsiveness envelope. Keep per-callback CPU sections short, split
+large transforms into bounded chunks that yield, or isolate CPU work in processes.
+
+Acp does not offload polling/ingestion callbacks into detached threads. Measured
+normal parsing/transformation fits the process model; offload would add mutation
+ownership and shutdown hazards without eliminating CRuby CPU serialization.
+Any future blocking-work offload must satisfy this contract before use:
+
+- Fixed worker and pending-queue bounds; reject/backpressure before submission and
+  charge queued/running inputs against the originating cycle's count/byte budgets.
+- Transfer immutable/copied inputs and thread-owned clients; never share a
+  reactor-local context, Active Record connection, transaction, or mutable batch.
+  Establish Rails executor and connection/transaction scopes in the executor.
+- Return results/errors to the originating task. Disable new destination writes
+  after lease loss; destination fencing/idempotence remains mandatory.
+- Cancellation stops queue admission and removes work that has not started.
+  Running, non-interruptible work must finish/unwind **before releasing its lease
+  or reservation**. A timeout is not proof that a thread/external write stopped.
+- Shutdown stops submission and joins workers; if a call cannot be bounded or
+  interrupted, use a separately supervised process and define its termination and
+  destination-fencing policy. Never claim a bounded in-process drain while that
+  call can still mutate destination state.
+
+For the measured representative workload (3 s TTL, renewal every 1 s), performance
+gates are reactor-lag **p99 ≤25 ms, maximum ≤150 ms**, minimum renewal slack
+**≥1.5 s**, no renewal deadline misses, and callback drain within **10.3 s**
+(10 s drain plus observation allowance). Unit tests use gates/interleavings;
+these wall-clock thresholds belong to performance checks. The idle, saturated
+synthetic/real TLS, 256 KiB payload, bounded-telemetry, and 30,000-tenant cases met
+these gates. Intentional blocking parse/telemetry are negative controls.
+See [reactor evidence and reproduction commands](benchmark/reactor-responsiveness-evidence.md)
+for CPU/GC, socket/RSS, admission lag, parsing costs, and process-count results.
 
 ## Redis coordination
 
@@ -270,6 +597,13 @@ worker-registry changes at `min(discovery_interval, lease_ttl / 3)` intervals,
 even when another worker owns discovery. Membership reads are pipelined in bounded
 chunks and cached by revision; assignments are cached until membership or worker
 capacities change. Atomic claims remain authoritative during convergence.
+Concurrent snapshot callers share one in-flight membership scan and one in-flight
+assignment refresh per coordinator. Membership scans validate their revision again
+before publishing; after three conflicting scans they fail for the next refresh
+to retry. Failed or cancelled leaders wake their waiters and clear the flight.
+Cached membership records carry their own revision, including when assignment
+computation yields. These caches are advisory and never authorize mutations.
+Direct `register_tenants` batches also update records and their revision atomically.
 Claims, worker scans, and discovery scans are bounded (the default maximum live
 workers is 256; configure
 `worker_scan_limit` for a larger deployment). Worker health is refreshed
@@ -304,6 +638,33 @@ ordinary Redis Ruby sockets, which cooperate with Ruby's fiber scheduler. Use a 
 writable Redis primary for v1. Redis Cluster is unsupported because the atomic
 scripts touch multiple keys without a cluster hash-tag layout.
 
+All Lua operations use centralized `EVALSHA` execution. A `NOSCRIPT` reply falls
+back once to `EVAL` on that checked-out connection, loading and executing the
+script. No per-connection script-cache assumptions are retained, so script flush,
+reconnect, and replacement-primary cache loss recover automatically. Redis ACLs
+must permit both `EVALSHA` and `EVAL` as well as the scripts' underlying commands.
+Transport failures and other command errors are propagated, never blindly
+replayed by this executor. Only the idempotent poll-ID advancement protocol
+reconciles an ambiguous advancement reply. Fault-injection wrappers must intercept
+`evalsha` by script SHA as well as cold-cache `eval` when injecting post-execution
+failures.
+
+Ownership validity checks use server time and token equality. Fetch attempts and
+ingestion callbacks validate ownership at their execution boundaries; Redis
+advancement validates it atomically with the progress mutation. Queue entry and
+exit no longer add redundant ownership round trips. Progress reads atomically
+distinguish an absent cursor from missing previously initialized progress.
+Claims still compute authoritative weighted rendezvous assignment against the
+live worker registry, rejecting stale cached assignments after rebalance. The
+measured O(worker count) cost and trigger for a versioned O(1)-claim follow-up are
+recorded in [the coordination benchmark report](benchmark/redis-coordination-evidence.md).
+
+For direct Async coordinator calls outside a runtime, `operation_timeout:`
+(default nil) bounds each checkout plus command operation. Within the runtime,
+`coordination_timeout` also covers custom progress/ownership adapters. When both
+are set, the shorter deadline wins. Non-Async callers should configure Redis
+socket timeouts through `redis_options`.
+
 Configure Redis for durable, non-evicting coordination data: use a `noeviction`
 policy, persistence appropriate to the acceptable recovery-point objective, and
 backups that include all `acp:v1:*` keys. A primary failover can lose recently
@@ -332,8 +693,10 @@ cycles awaiting progress acknowledgement. Fetch concurrency is separately
 bounded by `min(fetch_concurrency, pipeline_capacity)`; ingestion uses a fixed
 worker group bounded by both ingest concurrency and pipeline capacity. Successful
 cycles become due at `max(cycle_start + interval, acknowledgement_time)`. A
-failed cycle is isolated and rescheduled after one interval; stage retries retain
+failed cycle is isolated and rescheduled after `retry_cooldown`; stage retries retain
 their cursor, poll ID, resolved context, or batch as appropriate.
+With retry isolation enabled, the additional bounded retry reservations described
+above hold parked work outside pipeline occupancy.
 
 ## Dedicated Rails worker
 
@@ -373,8 +736,8 @@ grace period slightly longer than `ACP_DRAIN_TIMEOUT`. A force-killed process is
 recovered through lease expiry and replay from committed progress. Use rolling
 deployments with enough remaining replicas to serve work during the drain window.
 
-Discovery runs under a renewable Redis coordinator lease. Each emitted tenant is
-registered incrementally, while membership removals are applied only after a full
+Discovery runs under a renewable Redis coordinator lease. Bounded chunks of IDs
+are registered atomically under its token, while membership removals are applied only after a full
 enumeration completes. An interrupted or failed scan leaves prior membership
 intact. Disabled tenants stop receiving new cycles; their progress is retained and
 reactivation resumes from that cursor. Pausing and resuming is also persisted by
@@ -439,7 +802,7 @@ Histogram upper boundaries are
 followed by an open-ended overflow bucket. Overflow percentiles are `nil` (JSON
 `null`), rather than a misleading 300-second bound. Nonpositive slack shares the
 zero bucket; its exact signed minimum/last remains available. Empty distributions
-have zero count/sum/last/percentiles and `nil` min/max. Each runtime owns 20 fixed
+have zero count/sum/last/percentiles and `nil` min/max. Each runtime owns 23 fixed
 distributions, each coordinator five; observations never allocate tenant labels
 or historical sample arrays. Counters/histograms/maxima live for the lifetime of
 their runtime/coordinator instance, including restarts, startup, and drain; they
@@ -453,7 +816,7 @@ the local reporter also samples peak overdue work and reports an independent
 for the seeded before/after and saturated-fetch measurements.
 
 Size the Rails pool for at least
-`min(resolve_concurrency, pipeline_capacity) + min(ingest_concurrency, pipeline_capacity) + 1`
+`min(pipeline_capacity, resolve_concurrency + ingest_concurrency) + 1`
 plus web/job headroom; startup enforces that minimum. Redis reserves a separate
 connection pool for renewals and heartbeats. Budget Redis connections from both
 pool limits plus other application clients. Scale replica count and pipeline
@@ -510,14 +873,23 @@ bundle exec rake benchmark:services
 docker compose down
 ```
 
-Its nominal defaults use a seeded uniform 1–19 second fetch latency (10 seconds
-average), 2,500 fetch/pipeline slots per worker, and 16 ingestion slots. Each
-worker defaults to 16 resolution slots and a configured pool size of 37,
-including discovery and headroom. `ACP_BENCH_RESOLVE_CONCURRENCY` controls the
-resolution budget. Two workers therefore expose the plan's approximate 5,000
-concurrent-request budget; the one-worker run is the redistribution comparison.
-These are benchmark inputs,
-not recommended production settings. Set the `ACP_BENCH_*` values to match the
+Its candidate defaults use a seeded uniform 1–19 second fetch latency (10 seconds
+average), 3,500 fetch slots, 4,500 pipeline slots per worker, and 16 ingestion slots. Each
+worker defaults to 16 resolution slots and a configured pool size of 37:
+`min(4500, 16 + 16) + 1 = 33` Acp connections plus **4 benchmark headroom**.
+`ACP_BENCH_POOL_HEADROOM` controls that explicit extra allowance (default 4);
+`ACP_TEST_POOL` overrides the total per-worker size. The benchmark reports the
+Acp requirement, actual headroom, fleet pool budgets, and its separate one-connection
+driver budget. Worker checkout counts, peaks, timeouts, and acquisition durations
+(including creation/verification and waiting) are reported without observer checkouts.
+`ACP_BENCH_RESOLVE_CONCURRENCY` controls the resolution budget. Each worker also
+reserves up to 256 MiB of accounted bytes,
+with a 64 KiB default batch/response limit. The previous 2,500/2,500 configuration
+left no nominal fetch headroom at 500 fleet cycles/sec; the larger independently
+controlled inputs test overlap and a 75% operating target. **Both configurations
+failed the full release gate on the recorded host**: the candidate two-worker
+windows delivered 425.9/430.5 cycles/sec and 13.5% RSS growth. These are benchmark
+inputs, not recommended production settings. Set the `ACP_BENCH_*` values to match the
 target API's latency tails, payload distribution, database pool budget, and Redis
 connection limit before treating the result as release evidence.
 
@@ -530,6 +902,22 @@ per-worker ownership-acquisition and completion counts to compare work
 distribution and fairness. The local benchmark isolates scheduler overhead;
 only the service run includes Redis, PostgreSQL transactions, and multiple worker
 processes.
+
+Additional controls are `ACP_BENCH_RESOLVE_DELAY`, `ACP_BENCH_INGEST_DELAY`,
+`ACP_BENCH_ACKNOWLEDGE_DELAY` (seconds), `ACP_BENCH_TAIL_PROBABILITY` and
+`ACP_BENCH_TAIL_MULTIPLIER` (seeded latency and payload tails),
+`ACP_BENCH_MAX_BATCH_BYTES`, `ACP_BENCH_MAX_RESPONSE_BYTES`, and
+`ACP_BENCH_RETAINED_BYTE_CAPACITY`. `ACP_BENCH_WARMUP` defaults to one-quarter of
+the measurement duration. The remaining time is split into two equal windows;
+service RSS growth compares their mean sampled fleet RSS. Workers sample exact
+shared boundaries and report actual sample lateness. Startup and drain
+completions are excluded from window throughput. Final lifetime metrics include
+both and label that scope explicitly. `ACP_BENCH_REPORT` saves JSON;
+`ACP_BENCH_SUMMARY=1` prints only its location. Run
+`bundle exec ruby benchmark/capacity_sweep.rb` for the independent local sweep.
+Full 30,000-tenant/160-second comparisons exit nonzero when no tested fleet passes
+all release gates. `ACP_BENCH_REQUIRE_RELEASE=1` explicitly enables this exit gate
+for any workload (`0` records failures without enforcing the exit status).
 
 Release gates are workload gates, not universal capacity promises. On the
 documented deployment shape, run at least 30,000 tenants with representative

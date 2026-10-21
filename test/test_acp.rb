@@ -135,6 +135,60 @@ class TestAcp < Minitest::Test
   end
 end
 
+class TestAdmissionConfiguration < Minitest::Test
+  SETTINGS = { retry_capacity: 2, upstream_capacity: 1, resolve_timeout: 3, initial_cursor_timeout: 4,
+               coordination_timeout: 5, cleanup_timeout: 0.5 }.freeze
+
+  def program
+    Class.new(TestAcp::ValidProgram).tap { |definition| definition.program_name "IsolatedProgram" }
+  end
+
+  def test_subclasses_preserve_settings_and_independent_acknowledgement_policy
+    definition = program
+    SETTINGS.each { |name, value| definition.public_send(name, value) }
+    definition.acknowledge_retry on: IOError, max_attempts: 4
+    config = Class.new(definition).configuration
+    assert_equal(SETTINGS, SETTINGS.to_h { |name, _| [name, config.public_send(name)] })
+    assert_equal 4, config.acknowledge_retry.max_attempts
+    assert_equal 1, config.ingest_retry.max_attempts
+  end
+
+  def test_limits_reject_negative_values_and_isolation_is_opt_in
+    assert_equal 0, TestAcp::ValidProgram.configuration.retry_capacity
+    SETTINGS.each_key do |setting|
+      invalid = program
+      invalid.public_send(setting, -1)
+      assert_raises(Acp::ConfigurationError) { invalid.configuration }
+    end
+  end
+end
+
+class TestMemoryConfiguration < Minitest::Test
+  def definition
+    Class.new(TestAcp::ValidProgram).tap { |program| program.program_name "MemoryBudget" }
+  end
+
+  def test_memory_limits_require_positive_integers
+    %i[max_batch_bytes max_response_bytes retained_byte_capacity].each do |setting|
+      [0, -1, 1.5].each do |value|
+        program = definition
+        program.public_send(setting, value)
+        assert_raises(Acp::ConfigurationError) { program.configuration }
+      end
+    end
+  end
+
+  def test_memory_budget_requires_an_explicit_batch_limit
+    program = definition
+    program.retained_byte_capacity 100
+    assert_raises(Acp::ConfigurationError) { program.configuration }
+    program.max_batch_bytes 50
+    assert_equal 100, program.configuration.retained_byte_capacity
+    assert_nil TestAcp::ValidProgram.configuration.retained_byte_capacity
+    assert_raises(Acp::InvalidBatchError) { Acp::Batch.new(data: [], next_cursor: Time.utc(2025), size_bytes: -1) }
+  end
+end
+
 class TestRetryPolicy < Minitest::Test
   def test_policy_classifies_errors_and_excludes_cancellation
     require "async"

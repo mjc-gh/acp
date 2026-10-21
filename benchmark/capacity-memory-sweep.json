@@ -1,0 +1,2271 @@
+{
+  "benchmark": "capacity-independent-local-sweep",
+  "smoke_only": true,
+  "results": [
+    {
+      "name": "baseline",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 386.0,
+          "ending_rss_megabytes": 29.84765625
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 384.0,
+          "ending_rss_megabytes": 29.98046875
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 4,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 16,
+        "max_queued_batches": 8,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 19968,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 13
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.682686743493766,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.04147530520914343,
+          "p95": 0.1
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.000016314817124271695,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.0012854583576281972,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0000013597868958195026,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.020068191842815473,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.0037248805185727853,
+          "p95": 0.01
+        },
+        "ingest_service": {
+          "mean": 0.01012765178008802,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.0051321642333611375,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.0000020126424310789463,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000004960419377312064,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.00514298188348721,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00009298077202402055,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.041503159753779634,
+          "p95": 0.1
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "pipeline32",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "32",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 376.0,
+          "ending_rss_megabytes": 30.171875
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 392.0,
+          "ending_rss_megabytes": 30.32421875
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 4,
+        "pipeline": 32
+      },
+      "peaks": {
+        "max_active_cycles": 32,
+        "max_active_fetches": 16,
+        "max_queued_batches": 23,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 32,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 2097152,
+        "max_retained_bytes": 43008,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 28
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.6952071766864945,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.08329859565438509,
+          "p95": 0.1
+        },
+        "cycle_overrun": {
+          "mean": 0.00007223134544411931,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.00007096342325364569,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.0014579264983795143,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.00011887759425338696,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.02028714292191344,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.04426731193066248,
+          "p95": 0.1
+        },
+        "ingest_service": {
+          "mean": 0.010335523463020633,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005333635867376775,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.0000020389834437035507,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.0000066346070962026716,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.0053439577540243645,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.0003947856865124777,
+          "p95": 0.005
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.08332325126537328,
+          "p95": 0.1
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "pipeline128",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "128",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 390.6666666666667,
+          "ending_rss_megabytes": 32.39453125
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 389.3333333333333,
+          "ending_rss_megabytes": 32.89453125
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 4,
+        "pipeline": 128
+      },
+      "peaks": {
+        "max_active_cycles": 128,
+        "max_active_fetches": 16,
+        "max_queued_batches": 119,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 128,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 8388608,
+        "max_retained_bytes": 190464,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 124
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.470768091850705,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.3172849725036112,
+          "p95": 0.5
+        },
+        "cycle_overrun": {
+          "mean": 0.21784679744831434,
+          "p95": 0.25
+        },
+        "resolve_wait": {
+          "mean": 0.0015451100392856597,
+          "p95": 0.01
+        },
+        "resolve_service": {
+          "mean": 0.0013435960326549574,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.006357450473741321,
+          "p95": 0.1
+        },
+        "fetch_service": {
+          "mean": 0.020164786047416512,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.27036107021389516,
+          "p95": 0.5
+        },
+        "ingest_service": {
+          "mean": 0.010140764558531657,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005207971952197527,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.0000019436895925395503,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000004295388935133815,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005218249473101766,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00014250923684516617,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.3173098179085799,
+          "p95": 0.5
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "fetch8",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "8",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 374.0,
+          "ending_rss_megabytes": 29.9375
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 378.6666666666667,
+          "ending_rss_megabytes": 30.09375
+        }
+      ],
+      "capacities": {
+        "fetch": 8,
+        "resolve": 4,
+        "ingest": 4,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 8,
+        "max_queued_batches": 5,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 18432,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 12
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.7057107128387015,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.04239418218237196,
+          "p95": 0.1
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.00001859065361819165,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.001284874004995945,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0015449714603249071,
+          "p95": 0.01
+        },
+        "fetch_service": {
+          "mean": 0.020138934944552118,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.002887331156533496,
+          "p95": 0.01
+        },
+        "ingest_service": {
+          "mean": 0.01013987478862,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005154803744826676,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.000002222839105515385,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000004457416827790439,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.0051667808227092524,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00015600492188241332,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.04242246346053145,
+          "p95": 0.1
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "fetch32",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "32",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 384.6666666666667,
+          "ending_rss_megabytes": 29.92578125
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 386.0,
+          "ending_rss_megabytes": 30.0703125
+        }
+      ],
+      "capacities": {
+        "fetch": 32,
+        "resolve": 4,
+        "ingest": 4,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 16,
+        "max_queued_batches": 7,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 19968,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 13
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.692335437379389,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.041627204735482516,
+          "p95": 0.1
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.000018214665579140232,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.001290275685773871,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0000013696096196780395,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.020083738918301914,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.00381278314446245,
+          "p95": 0.01
+        },
+        "ingest_service": {
+          "mean": 0.01013129629860705,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005148747770082906,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.0000028349572395074227,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000006296314415521919,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005159955926852875,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00012240552168805153,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.04165355040246193,
+          "p95": 0.1
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "resolve1",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "1",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 380.0,
+          "ending_rss_megabytes": 29.81640625
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 381.3333333333333,
+          "ending_rss_megabytes": 29.98828125
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 1,
+        "ingest": 4,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 12,
+        "max_queued_batches": 5,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 16896,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 1,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 11
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.7009448375958196,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.04209552319581549,
+          "p95": 0.1
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.0005333345901259533,
+          "p95": 0.005
+        },
+        "resolve_service": {
+          "mean": 0.0012869698114212698,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0000013622372671666906,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.020102421393495735,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.0033275956620639167,
+          "p95": 0.01
+        },
+        "ingest_service": {
+          "mean": 0.010136652823708372,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005155133360908994,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.000002129295211786645,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000005624664248898625,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005166611159395422,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00014850897423457354,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.04212261315009441,
+          "p95": 0.1
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "resolve8",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "8",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 381.3333333333333,
+          "ending_rss_megabytes": 29.89453125
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 386.0,
+          "ending_rss_megabytes": 30.0390625
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 8,
+        "ingest": 4,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 16,
+        "max_queued_batches": 8,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 19968,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 8,
+        "max_pending_acknowledgements": 6,
+        "max_retained_batches": 13
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.6953492312674465,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.041707968655569146,
+          "p95": 0.1
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.000005616227912571957,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.0012948978600301605,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0000014145000716689596,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.02011570592259089,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.003803385911019097,
+          "p95": 0.01
+        },
+        "ingest_service": {
+          "mean": 0.010149110792050227,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005167432262831088,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.0000023345645775034253,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.0000046343032736331226,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005179647951503056,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00014125572924967856,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.04173648350859629,
+          "p95": 0.1
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "ingest1",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "1",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 98.0,
+          "ending_rss_megabytes": 29.515625
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 97.33333333333333,
+          "ending_rss_megabytes": 29.65234375
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 1,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 16,
+        "max_queued_batches": 14,
+        "max_active_ingests": 1,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 23040,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 1,
+        "max_retained_batches": 15
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.9165534875538557,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.1616038238949623,
+          "p95": 0.25
+        },
+        "cycle_overrun": {
+          "mean": 0.06225438160273651,
+          "p95": 0.1
+        },
+        "resolve_wait": {
+          "mean": 0.00004930968441073771,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.0010743803422180401,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.000001962737939750167,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.020443875766754094,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.1232168167339466,
+          "p95": 0.25
+        },
+        "ingest_service": {
+          "mean": 0.010152576394562617,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005153035085434628,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.000002711217622841683,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000005100753873660975,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005169728981328669,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00016073419473974443,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.1616431918643192,
+          "p95": 0.25
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "ingest8",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "8",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 420.0,
+          "ending_rss_megabytes": 30.0703125
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 420.6666666666667,
+          "ending_rss_megabytes": 30.21484375
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 8,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 16,
+        "max_queued_batches": 4,
+        "max_active_ingests": 8,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 19968,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 8,
+        "max_retained_batches": 13
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.6022606601562548,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.03800997643172797,
+          "p95": 0.05
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.000021671556560698512,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.0013314284540776175,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0000013327789365098342,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.020158311913650136,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.0001269824451962508,
+          "p95": 0.001
+        },
+        "ingest_service": {
+          "mean": 0.010140412663518582,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005161589457137235,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.000001983614907953399,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000005697983899153769,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.0051723733708414705,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00013297404511831702,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.03803548165259445,
+          "p95": 0.05
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "overlap32",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "8",
+        "ACP_BENCH_PIPELINE_CAPACITY": "32",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 766.0,
+          "ending_rss_megabytes": 30.51171875
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 765.3333333333334,
+          "ending_rss_megabytes": 30.57421875
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 8,
+        "pipeline": 32
+      },
+      "peaks": {
+        "max_active_cycles": 32,
+        "max_active_fetches": 16,
+        "max_queued_batches": 8,
+        "max_active_ingests": 8,
+        "max_pipeline_reservations": 32,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 2097152,
+        "max_retained_bytes": 32256,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 8,
+        "max_retained_batches": 21
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.00944910839889,
+          "p95": 2
+        },
+        "cycle_duration": {
+          "mean": 0.041763247390782215,
+          "p95": 0.1
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.00005781540475468784,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.0016137738765530866,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0012256858423397969,
+          "p95": 0.005
+        },
+        "fetch_service": {
+          "mean": 0.020118464000138978,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.0025585550968817232,
+          "p95": 0.01
+        },
+        "ingest_service": {
+          "mean": 0.010149710744835814,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005158203781838491,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.0000017222960566440308,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000003879336058162153,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005167270892599991,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00015251997392624618,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.041785205515450605,
+          "p95": 0.1
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "overlap128",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "8",
+        "ACP_BENCH_PIPELINE_CAPACITY": "128",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 778.6666666666666,
+          "ending_rss_megabytes": 32.9609375
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 774.0,
+          "ending_rss_megabytes": 33.03125
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 8,
+        "pipeline": 128
+      },
+      "peaks": {
+        "max_active_cycles": 128,
+        "max_active_fetches": 16,
+        "max_queued_batches": 72,
+        "max_active_ingests": 8,
+        "max_pipeline_reservations": 128,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 8388608,
+        "max_retained_bytes": 130560,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 8,
+        "max_retained_batches": 85
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 0.9201602579221951,
+          "p95": 2
+        },
+        "cycle_duration": {
+          "mean": 0.16231350557094648,
+          "p95": 0.25
+        },
+        "cycle_overrun": {
+          "mean": 0.06285346821681817,
+          "p95": 0.1
+        },
+        "resolve_wait": {
+          "mean": 0.001328961205620606,
+          "p95": 0.01
+        },
+        "resolve_service": {
+          "mean": 0.0016467497576631094,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.08200216603411793,
+          "p95": 0.25
+        },
+        "fetch_service": {
+          "mean": 0.02016190627092272,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.04031344915914487,
+          "p95": 0.1
+        },
+        "ingest_service": {
+          "mean": 0.010164841262345844,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005204642444199302,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.0000021024424017169947,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.0000033638678723946212,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005214418773990756,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.0001251397898602413,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.1623353110786147,
+          "p95": 0.25
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "heavy_tail",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005",
+        "ACP_BENCH_TAIL_PROBABILITY": "0.1",
+        "ACP_BENCH_TAIL_MULTIPLIER": "10"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.1,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 268435456,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 274.6666666666667,
+          "ending_rss_megabytes": 29.86328125
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 270.0,
+          "ending_rss_megabytes": 29.92578125
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 4,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 16,
+        "max_active_fetches": 16,
+        "max_queued_batches": 7,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 16,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 1048576,
+        "max_retained_bytes": 39936,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 12
+      },
+      "byte_budget_waits": 0,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.8855856149283248,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.058407119528182755,
+          "p95": 0.25
+        },
+        "cycle_overrun": {
+          "mean": 0.012561658371205308,
+          "p95": 0.25
+        },
+        "resolve_wait": {
+          "mean": 0.000022089117405031814,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.0011309422049945981,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.000001936009388454157,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.039290390612666454,
+          "p95": 0.25
+        },
+        "ingest_wait": {
+          "mean": 0.001190784787936499,
+          "p95": 0.01
+        },
+        "ingest_service": {
+          "mean": 0.010162010930874574,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005184700786864768,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.000002809500567452916,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000005605376209132374,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.005200344984945676,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.00013400865940465812,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "pipeline_residence": {
+          "mean": 0.05844462674260156,
+          "p95": 0.25
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    },
+    {
+      "name": "byte_constrained",
+      "environment": {
+        "ACP_BENCH_TENANTS": "1000",
+        "ACP_BENCH_DURATION": "4",
+        "ACP_BENCH_INTERVAL": "0.1",
+        "ACP_BENCH_SEED": "20261001",
+        "ACP_BENCH_LATENCY_MIN": "0.01",
+        "ACP_BENCH_LATENCY_MAX": "0.03",
+        "ACP_BENCH_PAYLOAD_BYTES": "1024",
+        "ACP_BENCH_FETCH_CONCURRENCY": "16",
+        "ACP_BENCH_RESOLVE_CONCURRENCY": "4",
+        "ACP_BENCH_INGEST_CONCURRENCY": "4",
+        "ACP_BENCH_PIPELINE_CAPACITY": "16",
+        "ACP_BENCH_RESOLVE_DELAY": "0.002",
+        "ACP_BENCH_INGEST_DELAY": "0.01",
+        "ACP_BENCH_ACKNOWLEDGE_DELAY": "0.005",
+        "ACP_BENCH_RETAINED_BYTE_CAPACITY": "262144"
+      },
+      "workload": {
+        "seed": 20261001,
+        "tail": {
+          "tail_probability": 0.0,
+          "tail_multiplier": 10.0
+        },
+        "resolve_delay": 0.002,
+        "ingest_delay": 0.01,
+        "acknowledge_delay": 0.005,
+        "max_batch_bytes": 65536,
+        "max_response_bytes": 65536,
+        "retained_byte_capacity": 262144,
+        "target_utilization": 0.75
+      },
+      "windows": [
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 103.33333333333333,
+          "ending_rss_megabytes": 29.25390625
+        },
+        {
+          "duration_seconds": 1.5,
+          "throughput_cycles_per_second": 104.0,
+          "ending_rss_megabytes": 29.31640625
+        }
+      ],
+      "capacities": {
+        "fetch": 16,
+        "resolve": 4,
+        "ingest": 4,
+        "pipeline": 16
+      },
+      "peaks": {
+        "max_active_cycles": 4,
+        "max_active_fetches": 4,
+        "max_queued_batches": 2,
+        "max_active_ingests": 4,
+        "max_pipeline_reservations": 4,
+        "max_retry_reservations": 0,
+        "max_parked_cycles": 0,
+        "max_upstream_groups": 0,
+        "max_reserved_bytes": 262144,
+        "max_retained_bytes": 6144,
+        "max_byte_budget_waiters": 1,
+        "max_active_resolves": 4,
+        "max_pending_acknowledgements": 4,
+        "max_retained_batches": 4
+      },
+      "byte_budget_waits": 392,
+      "stage_seconds": {
+        "admission_lag": {
+          "mean": 1.9763520572393158,
+          "p95": 5
+        },
+        "cycle_duration": {
+          "mean": 0.038540101188999434,
+          "p95": 0.05
+        },
+        "cycle_overrun": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "resolve_wait": {
+          "mean": 0.0000021938351828595915,
+          "p95": 0.001
+        },
+        "resolve_service": {
+          "mean": 0.001080141025347315,
+          "p95": 0.005
+        },
+        "fetch_wait": {
+          "mean": 0.0000022400892734275025,
+          "p95": 0.001
+        },
+        "fetch_service": {
+          "mean": 0.020525466815904503,
+          "p95": 0.05
+        },
+        "ingest_wait": {
+          "mean": 0.0000919735481394297,
+          "p95": 0.001
+        },
+        "ingest_service": {
+          "mean": 0.010153344867877284,
+          "p95": 0.025
+        },
+        "acknowledge_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_service": {
+          "mean": 0.005180796663858646,
+          "p95": 0.01
+        },
+        "cursor_read_service": {
+          "mean": 0.00001935026756111199,
+          "p95": 0.001
+        },
+        "cursor_initialize_service": {
+          "mean": 0.000007149057302705168,
+          "p95": 0.001
+        },
+        "cursor_update_delay": {
+          "mean": 0.00520101486261005,
+          "p95": 0.01
+        },
+        "fetch_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "ingest_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "acknowledge_backoff": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "reactor_lag": {
+          "mean": 0.0001517660915851593,
+          "p95": 0.001
+        },
+        "renewal_wakeup_lag": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "renewal_service": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "retry_admission_wait": {
+          "mean": 0.0,
+          "p95": 0.0
+        },
+        "byte_budget_wait": {
+          "mean": 0.00995174025711651,
+          "p95": 0.05
+        },
+        "pipeline_residence": {
+          "mean": 0.03858544594877722,
+          "p95": 0.05
+        }
+      },
+      "environment_details": {
+        "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+        "dependencies": {
+          "async": "2.37.0",
+          "redis": "5.4.1",
+          "rails": "8.1.4",
+          "pg": "1.6.3"
+        },
+        "platform": "x86_64-pc-linux",
+        "os_release": "Ubuntu 24.04.4 LTS\"\n"
+      },
+      "released": true
+    }
+  ]
+}

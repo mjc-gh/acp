@@ -13,12 +13,18 @@ class ReliabilityUpstream
   attr_reader :calls, :payload_bytes, :latency_buckets
 
   def initialize(seed: 1, latency: [0.0, 0.0], payload_size: 128, records_per_batch: 1,
-                 timestamp_window: 1, faults: {})
+                 timestamp_window: 1, faults: {}, tail_probability: 0, tail_multiplier: 10)
     @seed = Integer(seed)
     @latency_min, @latency_max = latency.map { |value| Float(value) }
     unless @latency_min >= 0 && @latency_max >= @latency_min
       raise ArgumentError, "latency must be nonnegative and ordered"
     end
+    unless tail_probability.between?(0, 1) && tail_multiplier >= 1
+      raise ArgumentError, "tail probability must be in 0..1 and multiplier at least 1"
+    end
+
+    @tail_probability = tail_probability
+    @tail_multiplier = tail_multiplier
     raise ArgumentError, "payload_size must be nonnegative" unless payload_size.is_a?(Integer) && payload_size >= 0
     unless records_per_batch.is_a?(Integer) && records_per_batch >= 0
       raise ArgumentError, "records_per_batch must be nonnegative"
@@ -58,7 +64,8 @@ class ReliabilityUpstream
     @payload_bytes += records.sum { |record| record.fetch(:payload).bytesize }
     bucket = LATENCY_BUCKETS.index { |boundary| elapsed <= boundary } || LATENCY_BUCKETS.length - 1
     @latency_buckets[bucket] += 1
-    Acp::Batch.new(data: records, next_cursor: Acp::Timestamp.normalize(cursor) + @timestamp_window)
+    bytes = records.sum { |record| record.fetch(:payload).bytesize + 512 }
+    Acp::Batch.new(data: records, next_cursor: Acp::Timestamp.normalize(cursor) + @timestamp_window, size_bytes: bytes)
   end
 
   def latency_percentile(percentile)
@@ -75,15 +82,15 @@ class ReliabilityUpstream
   private
 
   def latency_for(tenant_id, attempt)
-    return @latency_min if @latency_min == @latency_max
-
     random = seeded_random(tenant_id, attempt, "latency")
-    @latency_min + (random.rand * (@latency_max - @latency_min))
+    delay = @latency_min + (random.rand * (@latency_max - @latency_min))
+    delay * (random.rand < @tail_probability ? @tail_multiplier : 1)
   end
 
   def records_for(tenant_id, cursor, attempt)
     base_time = Acp::Timestamp.normalize(cursor)
     random = seeded_random(tenant_id, attempt, "records")
+    size = (@payload_size * (random.rand < @tail_probability ? @tail_multiplier : 1)).ceil
     Array.new(@records_per_batch) do |index|
       offset = (random.rand * @timestamp_window * 1_000_000).round / 1_000_000.0
       timestamp = base_time + offset
@@ -91,7 +98,7 @@ class ReliabilityUpstream
         id: Digest::SHA256.hexdigest("#{@seed}:#{tenant_id}:#{attempt}:#{index}")[0, 24],
         tenant_id: tenant_id,
         updated_at: timestamp,
-        payload: "x" * @payload_size
+        payload: "x" * size
       }
     end
   end

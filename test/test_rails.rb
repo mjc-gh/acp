@@ -39,7 +39,7 @@ class TestRailsIntegration < Minitest::Test
   end
 
   class FakePool
-    attr_reader :connection, :active, :size
+    attr_reader :connection, :active, :size, :checkout_options
 
     def initialize(size: 5)
       @size = size
@@ -51,7 +51,8 @@ class TestRailsIntegration < Minitest::Test
       Struct.new(:adapter).new("postgresql")
     end
 
-    def with_connection(**_options)
+    def with_connection(**options)
+      @checkout_options = options
       @active += 1
       yield connection
     ensure
@@ -60,15 +61,19 @@ class TestRailsIntegration < Minitest::Test
   end
 
   class FakeExecutor
-    attr_reader :calls
+    attr_reader :calls, :active
 
     def initialize
       @calls = 0
+      @active = 0
     end
 
     def wrap
       @calls += 1
+      @active += 1
       yield
+    ensure
+      @active -= 1
     end
   end
 
@@ -233,8 +238,73 @@ class TestRailsIntegration < Minitest::Test
         application: build_application
       )
     end
-    assert_match(/pool size 1 is below the required 3/, error.message)
+    assert_match(/pool size 1 is below the required 2/, error.message)
   end
+
+  def test_shared_cycle_pool_budget_boundaries
+    [[8, 8, 8, 9], [100, 5, 7, 13], [1, 5, 7, 2],
+     [6, 2, 4, 7], [4, 1, 8, 5], [20, 9, 2, 12]].each do |pipeline, resolve, ingest, required|
+      program = build_program
+      program.pipeline_capacity pipeline
+      program.resolve_concurrency resolve
+      program.ingest_concurrency ingest
+      config = Acp::Rails.configuration_for(
+        program, transaction_owner: FakePool.new(size: required), application: build_application
+      )
+      assert_equal pipeline, config.pipeline_capacity
+
+      error = assert_raises(Acp::ConfigurationError) do
+        Acp::Rails.configuration_for(
+          program, transaction_owner: FakePool.new(size: required - 1), application: build_application
+        )
+      end
+      assert_includes error.message, "pool size #{required - 1} is below the required #{required}"
+      assert_includes error.message, "pipeline_capacity=#{pipeline}"
+      assert_includes error.message, "resolve_concurrency=#{resolve}"
+      assert_includes error.message, "ingest_concurrency=#{ingest}"
+      assert_includes error.message, "+ 1 discovery"
+      assert_includes error.message, "application headroom"
+    end
+  end
+
+  # rubocop:disable Metrics/BlockLength
+  def test_database_callback_scopes_unwind_on_errors_and_cancellation
+    %i[tenants initial_cursor resolve ingest tenants_page].each do |name|
+      %i[error cancellation].each do |outcome|
+        pool = FakePool.new(size: 2)
+        application = build_application
+        program = build_program
+        entered = false
+        program.public_send(name) do |*|
+          entered = true
+          assert_equal 1, pool.active
+          assert_equal 1, application.executor.active
+          raise IOError, "callback failed" if outcome == :error
+
+          Kernel.sleep(60)
+        end
+        config = Acp::Rails.configuration_for(program, transaction_owner: pool, application: application)
+        arguments = { tenants: [->(*) {}], tenants_page: [nil, 1], initial_cursor: ["tenant"],
+                      resolve: ["tenant"], ingest: [nil, nil] }.fetch(name)
+        if outcome == :error
+          assert_raises(IOError) { config.callback(name).call(*arguments) }
+        else
+          Async do |root|
+            callback = root.async { config.callback(name).call(*arguments) }
+            root.with_timeout(1) { Kernel.sleep(0.001) until entered }
+            callback.stop
+            callback.wait
+          end.wait
+        end
+        assert entered
+        assert_equal({ prevent_permanent_checkout: true }, pool.checkout_options)
+        assert_equal 0, pool.active
+        assert_equal 0, application.executor.active
+        refute pool.connection.transaction_open?
+      end
+    end
+  end
+  # rubocop:enable Metrics/BlockLength
 
   def test_large_http_pipeline_can_use_a_small_database_pool
     program = build_program
