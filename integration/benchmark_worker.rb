@@ -90,14 +90,19 @@ Async do |root|
     loop do
       root.sleep(5)
       rss = File.read("/proc/self/status").match(/^VmRSS:\s+(\d+)\s+kB$/)[1].to_i / 1024.0
-      completed = runtime.metrics.fetch(:completed_cycles) - baseline_completed
+      snapshot = runtime.metrics
+      completed = snapshot.fetch(:completed_cycles) - baseline_completed
       sample_file.puts(
         JSON.generate(
           {
             at_seconds: Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at,
             completed_cycles: completed,
-            active_cycles: runtime.metrics.fetch(:active_cycles),
-            queued_batches: runtime.metrics.fetch(:queued_batches),
+            active_cycles: snapshot.fetch(:active_cycles),
+            queued_batches: snapshot.fetch(:queued_batches),
+            overdue_tenants: snapshot.fetch(:overdue_tenants),
+            oldest_overdue_age: snapshot.fetch(:oldest_overdue_age),
+            pressure: snapshot.fetch(:pressure),
+            redis: snapshot[:redis],
             rss_megabytes: rss
           }
         )

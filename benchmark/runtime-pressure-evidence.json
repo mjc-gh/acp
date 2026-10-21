@@ -1,0 +1,90 @@
+{
+  "captured_on": "2026-10-21",
+  "benchmark": "local-runtime",
+  "report_format": "selected JSON reporter fields; pressure distributions reduced to count/sum/max/p95",
+  "environment": {
+    "ruby": "ruby 4.0.6 (2026-07-14 revision 03b6d3f889) +PRISM [x86_64-linux]",
+    "platform": "x86_64-pc-linux",
+    "os": "Ubuntu 24.04.4 LTS",
+    "dependencies": { "async": "2.37.0", "redis": "5.4.1", "rails": "8.1.4", "pg": "1.6.3" }
+  },
+  "workload": {
+    "seed": 20261001,
+    "tenants": 1000,
+    "configured_duration_seconds": 5,
+    "interval_seconds": 1,
+    "latency_seconds": [0.001, 0.01],
+    "payload_bytes": 1024,
+    "ingest_capacity": 16,
+    "pipeline_capacity": 256
+  },
+  "reports": {
+    "before_runtime_instrumentation": {
+      "fetch_capacity": 100,
+      "duration_seconds": 5.010,
+      "completed_cycles": 4987,
+      "throughput_cycles_per_second": 995.35,
+      "initial_rss_megabytes": 27.92,
+      "peak_rss_megabytes": 30.50,
+      "ending_rss_megabytes": 30.50,
+      "observer_reactor_lag_seconds": { "count": 49, "sum": 0.009449244244024158, "max": 0.0016198300290852785 },
+      "legacy_polling_lag_seconds": { "last": 0, "p50": 0, "p95": 0, "p99": 0 }
+    },
+    "after_runtime_instrumentation": {
+      "fetch_capacity": 100,
+      "duration_seconds": 5.010,
+      "completed_cycles": 4990,
+      "throughput_cycles_per_second": 996.02,
+      "initial_rss_megabytes": 27.90,
+      "peak_rss_megabytes": 30.60,
+      "ending_rss_megabytes": 30.60,
+      "observer_reactor_lag_seconds": { "count": 49, "sum": 0.007178167579695582, "max": 0.001170643954537809 },
+      "sampled_pressure_peaks": { "overdue_tenants": 3, "oldest_overdue_age": 0.0012073114048689604 },
+      "pressure": {
+        "admission_lag": { "count": 4990, "sum": 0.9661976003553718, "max": 0.004621217492967844, "p95": 0.001 },
+        "cycle_duration": { "count": 4990, "sum": 30.389663319685496, "max": 0.015753248939290643, "p95": 0.025 },
+        "cycle_overrun": { "count": 4990, "sum": 0, "max": 0, "p95": 0 },
+        "resolve_wait": { "count": 5990, "sum": 0.007572142058052123, "max": 0.000015391036868095398, "p95": 0.001 },
+        "resolve_service": { "count": 5990, "sum": 0.010099974577315152, "max": 0.0005091230850666761, "p95": 0.001 },
+        "fetch_wait": { "count": 4990, "sum": 0.004225891083478928, "max": 0.000014733988791704178, "p95": 0.001 },
+        "fetch_service": { "count": 4990, "sum": 28.407990517443977, "max": 0.012929670978337526, "p95": 0.01 },
+        "ingest_wait": { "count": 4990, "sum": 0.5472081680782139, "max": 0.0018105990020558238, "p95": 0.001 },
+        "ingest_service": { "count": 4990, "sum": 0.007009297842159867, "max": 0.00007114000618457794, "p95": 0.001 },
+        "acknowledge_wait": { "count": 4990, "sum": 0, "max": 0, "p95": 0 },
+        "acknowledge_service": { "count": 4990, "sum": 0.02639378746971488, "max": 0.00009092502295970917, "p95": 0.001 },
+        "cursor_read_service": { "count": 4990, "sum": 0.004396091913804412, "max": 0.000014537014067173004, "p95": 0.001 },
+        "cursor_initialize_service": { "count": 1000, "sum": 0.0030594023410230875, "max": 0.000029391958378255367, "p95": 0.001 },
+        "cursor_update_delay": { "count": 4990, "sum": 0.06352913239970803, "max": 0.0004114919574931264, "p95": 0.001 },
+        "reactor_lag": { "count": 50, "sum": 0.007672701263800263, "max": 0.0022332710213959217, "p95": 0.001 }
+      }
+    },
+    "saturated_fetch": {
+      "fetch_capacity": 1,
+      "duration_seconds": 6.475,
+      "completed_cycles": 1099,
+      "throughput_cycles_per_second": 169.73,
+      "initial_rss_megabytes": 27.89,
+      "peak_rss_megabytes": 36.00,
+      "ending_rss_megabytes": 36.01,
+      "observer_reactor_lag_seconds": { "count": 64, "sum": 0.015139168710447848, "max": 0.004308605915866792 },
+      "sampled_pressure_peaks": { "overdue_tenants": 997, "oldest_overdue_age": 5.3654850339517 },
+      "pressure": {
+        "admission_lag": { "count": 1099, "sum": 1546.5180740519427, "max": 3.895183203043416, "p95": 5 },
+        "cycle_duration": { "count": 1099, "sum": 1428.4399675832829, "max": 1.5549879000755027, "p95": 2 },
+        "cycle_overrun": { "count": 1099, "sum": 424.8527317009866, "max": 0.5549917760072276, "p95": 1 },
+        "resolve_wait": { "count": 2099, "sum": 0.0031568094855174422, "max": 0.00002948800101876259, "p95": 0.001 },
+        "resolve_service": { "count": 2099, "sum": 0.007667495519854128, "max": 0.002069587935693562, "p95": 0.001 },
+        "fetch_wait": { "count": 1099, "sum": 1421.408015639172, "max": 1.5515770270721987, "p95": 2 },
+        "fetch_service": { "count": 1099, "sum": 6.412945080199279, "max": 0.012063383008353412, "p95": 0.01 },
+        "ingest_wait": { "count": 1099, "sum": 0.09408477612305433, "max": 0.003129452932626009, "p95": 0.001 },
+        "ingest_service": { "count": 1099, "sum": 0.002863307250663638, "max": 0.00004639197140932083, "p95": 0.001 },
+        "acknowledge_wait": { "count": 1099, "sum": 0, "max": 0, "p95": 0 },
+        "acknowledge_service": { "count": 1099, "sum": 0.012267784564755857, "max": 0.0014857059577479959, "p95": 0.001 },
+        "cursor_read_service": { "count": 1099, "sum": 0.001460388652049005, "max": 0.000014838995411992073, "p95": 0.001 },
+        "cursor_initialize_service": { "count": 1000, "sum": 0.0036270011914893985, "max": 0.000014654011465609074, "p95": 0.001 },
+        "cursor_update_delay": { "count": 1099, "sum": 0.026745460112579167, "max": 0.0014941389672458172, "p95": 0.001 },
+        "reactor_lag": { "count": 64, "sum": 0.009715955588035285, "max": 0.000623969011940062, "p95": 0.001 }
+      }
+    }
+  }
+}

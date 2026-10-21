@@ -389,11 +389,68 @@ aggregate metrics from `runtime.metrics` without tenant labels. The metrics
 snapshot includes assigned and discovered tenant counts (including tenants
 assigned to other workers), active fetches/cycles/ingests, queue wait,
 ingestion duration, cursor-update delay, retries, polling lag, discovery health,
-lease acquisition/skips, completed cycles, and lease renewal misses. Polling lag
-p50/p95/p99 values come from a fixed-size histogram and are reported as bucket
-upper bounds, so metrics memory does not grow with runtime duration.
+lease acquisition/skips, completed cycles, and lease renewal misses. `pressure`
+contains fixed-size timing distributions; `redis` contains the ownership
+coordinator's metrics when available. All times below are **seconds**, measured
+with monotonic clocks. Tenant and poll IDs occur only in diagnostic events.
 `runtime.health` reports running/stopping state and the same aggregate snapshot;
 Redis `worker_statuses` reports live worker capacity and activity.
+
+### Runtime pressure metrics
+
+| Metric | Measurement boundary |
+| --- | --- |
+| `overdue_tenants`, `oldest_overdue_age` | Current count and maximum age of due tenants waiting for pipeline admission. Snapshots include unfinished/failing workloads; exclude in-flight, locally paused, and disabled tenants. Redis pause/removal changes appear when assignment refresh consumes them. Both are zero while stopped. Reading health performs no Redis I/O. |
+| `pressure.admission_lag` | `max(cycle_start - scheduled_due, 0)`, recorded before acquisition or cursor work for **every admission**, including ownership skips, failures, and cancellation. |
+| `polling_lag`, `polling_lag_p50/p95/p99` | Compatibility keys now alias the last admission lag and its lifetime percentile bucket bounds. Previously these described only successful cycle overrun. Use `pressure.cycle_overrun` for the old concept. |
+| `pressure.cycle_duration`, `pressure.cycle_overrun` | Admission to acknowledgement/terminal failure/cancellation, before lease cleanup. Overrun is `max(duration - interval, 0)`. Includes ownership, cursor work, stage waits, retries, and backoff. Every terminated cycle contributes, including skipped ownership. Incomplete cycles remain visible through active-cycle gauges and overdue waiting work. |
+| `pressure.resolve_wait`, `pressure.resolve_service` | Semaphore wait versus resolver callback execution. Includes both initial-cursor and tenant-resolution callbacks, each separately sampled. |
+| `pressure.fetch_wait`, `pressure.fetch_service` | Fetch semaphore wait versus callback execution, separately sampled for each attempt. |
+| `pressure.ingest_wait`, `pressure.ingest_service` | Enqueue to worker dequeue versus ingestion callback execution for each attempt. Cancelled/timed-out queued messages record their elapsed wait once, even if never dequeued. Ownership validation between dequeue and callback is outside these measurements. |
+| `pressure.acknowledge_wait`, `pressure.acknowledge_service` | There is no acknowledgement semaphore: admission wait is zero per attempt. Service covers each idempotent progress attempt, including its adapter I/O. |
+| `pressure.cursor_read_service`, `pressure.cursor_initialize_service` | Progress adapter read and initialization operations; initial-cursor callback timing is included in resolution above. |
+| `pressure.cursor_update_delay` | Entire acknowledgement lifecycle after ingestion, including retries/backoff; records unsuccessful/cancelled lifecycles too. |
+| `pressure.fetch_backoff`, `pressure.ingest_backoff`, `pressure.acknowledge_backoff` | Actual elapsed retry/cooldown sleep, separately from attempt service and stage wait. A cancelled sleep records its elapsed portion. |
+| `pressure.reactor_lag` | One runtime-owned sampler wakes every 100 ms and records `max(wakeup - expected_wakeup, 0)`. Resets its next expectation after waking: one delayed observation per stall, no catch-up tasks. Stops with the runtime. |
+| `pressure.renewal_wakeup_lag`, `pressure.renewal_service` | Tenant heartbeat lateness relative to the requested sleep, and full renewal operation duration (including Redis checkout). Uses the coordinator's renewal interval (Redis TTL / 3). |
+| `redis.pressure.commands_checkout`, `redis.pressure.renewal_checkout` | Ordinary/renewal lane semaphore checkout waits. Heartbeats and discovery renewals share the renewal lane. Cancellation before checkout records wait only. |
+| `redis.pressure.commands_service`, `redis.pressure.renewal_service` | Time holding a checked-out connection, including lazy client creation and all commands/pipelines in that checkout. These are **checkout-block** durations, not individual wire-command latencies; no command or key labels are retained. Failed/cancelled commands contribute and discard their client. |
+| `redis.pressure.lease_renewal_slack` | Previous confirmed tenant lease's conservative monotonic deadline minus renewal reply/failure time, **including checkout and command latency**. May be negative. Failed renewal never moves the deadline. A confirmed successful claim/renewal sets the deadline to command-start + TTL, never reply-time + TTL. Redis server timestamps are not compared to local monotonic time. |
+| `redis.renewal_successes`, `redis.renewal_failures`, `redis.renewal_deadline_misses` | Confirmed tenant renewal results (rejection/ordinary exception counts as failure; cancellation is recorded in timing outcomes), and attempts finishing at/past the previous conservative deadline. A deadline miss may accompany success; a failed renewal can have positive slack. Runtime's existing top-level `renewal_deadline_misses` retains its historical meaning of failed heartbeat operations. |
+
+`queue_wait`, `ingestion_duration`, and `cursor_update_delay` retain their existing
+last-value semantics. The corresponding distributions above are preferable for
+contention analysis. Timings can be nested: do not sum cycle, adapter, and Redis
+durations as independent work. None of these metrics measures source-data
+freshness; that requires source timestamps and a separately defined wall-clock
+freshness policy.
+
+Each distribution has exact `count`, `sum`, `last`, `min`, `max`, exclusive
+`buckets`, and `outcomes` counters (`success`, `error`, `timeout`, `cancelled`),
+plus `p50/p95/p99` bucket upper bounds. Timeout/cancellation records partial
+elapsed work in ensure blocks. A deadline that stops an active ingestion child
+appears as cancellation in child service and timeout in the parent cycle; a
+queued ingestion deadline records a timeout wait. Service success means a call
+returned without exception; protocol renewal rejection is distinguished by
+renewal result counters. No sample is fabricated for a callback that never starts.
+
+Histogram upper boundaries are
+`[0, .001, .005, .01, .025, .05, .1, .25, .5, 1, 2, 5, 10, 30, 60, 300]`,
+followed by an open-ended overflow bucket. Overflow percentiles are `nil` (JSON
+`null`), rather than a misleading 300-second bound. Nonpositive slack shares the
+zero bucket; its exact signed minimum/last remains available. Empty distributions
+have zero count/sum/last/percentiles and `nil` min/max. Each runtime owns 20 fixed
+distributions, each coordinator five; observations never allocate tenant labels
+or historical sample arrays. Counters/histograms/maxima live for the lifetime of
+their runtime/coordinator instance, including restarts, startup, and drain; they
+do not reset per polling interval. New instances reset them. Snapshots and their
+nested data are frozen copies. Snapshot generation scans current scheduler state
+for overdue work; observations use constant storage and one sampler task.
+
+Both benchmark reporters include pressure distributions and histogram boundaries;
+the local reporter also samples peak overdue work and reports an independent
+100 ms reactor observer. See [Story 01 implementation evidence](benchmark/runtime-pressure-evidence.md)
+for the seeded before/after and saturated-fetch measurements.
 
 Size the Rails pool for at least
 `min(resolve_concurrency, pipeline_capacity) + min(ingest_concurrency, pipeline_capacity) + 1`

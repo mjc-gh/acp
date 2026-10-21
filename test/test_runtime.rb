@@ -88,6 +88,13 @@ class TestRuntime < Minitest::Test
     end
   end
 
+  # Tests explicitly advance time; a scheduler wait must not jump to the next due date.
+  class ControlledClock < FakeClock
+    def wait(_duration)
+      yield
+    end
+  end
+
   def build_program(tenants: ["a"], interval: 0.05, fetch: nil, ingest: nil, fetch_retry: {}, ingest_retry: {})
     tenant_ids = tenants
     fetch_callback = fetch || lambda do |_tenant, context|
@@ -676,5 +683,309 @@ class TestRuntime < Minitest::Test
     ActiveSupport::Notifications.unsubscribe(subscription) if subscription
   end
   # rubocop:enable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+
+  def test_admission_lateness_includes_failed_cycles_without_cycle_overrun
+    clock = FakeClock.new
+    starts = []
+    waiting = []
+    runtime = nil
+    failed = Async::Queue.new
+    program = build_program(tenants: %w[a b c], interval: 1, fetch: lambda do |_tenant, context|
+      starts << clock.now
+      waiting << runtime.metrics[:overdue_tenants]
+      raise IOError, "last cycle fails" if starts.length == 3
+
+      clock.sleep(0.03)
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end)
+    program.pipeline_capacity 1
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, clock: clock,
+                               on_error: ->(*) { failed.push(true) })
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    Async do |root|
+      runner = root.async { runtime.run }
+      failed.pop
+      runner.stop
+    end
+
+    assert_equal [0.0, 0.03, 0.06], starts
+    assert_equal [2, 1, 0], waiting
+    pressure = runtime.metrics[:pressure]
+    assert_equal 3, pressure[:admission_lag][:count]
+    assert_in_delta 0.09, pressure[:admission_lag][:sum]
+    assert_in_delta 0.06, runtime.metrics[:polling_lag]
+    assert_equal 0.05, runtime.metrics[:polling_lag_p50]
+    assert_equal 0.1, runtime.metrics[:polling_lag_p95]
+    assert_equal 0, pressure[:cycle_overrun][:max]
+    assert_equal 1, pressure[:cycle_duration][:outcomes][:error]
+    assert_equal 2, runtime.metrics[:completed_cycles]
+  end
+
+  def test_overdue_population_is_live_during_indefinite_work_and_membership_changes
+    clock = ControlledClock.new
+    gate = Async::Queue.new
+    started = Async::Queue.new
+    program = build_program(tenants: %w[a b c], interval: 60, fetch: lambda do |*|
+      started.push(true)
+      gate.pop
+    end)
+    program.pipeline_capacity 1
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, clock: clock)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    Async do |root|
+      runner = root.async { runtime.run }
+      started.pop
+      clock.sleep(4)
+      assert_equal 0, runtime.metrics[:completed_cycles]
+      assert_equal 2, runtime.health[:metrics][:overdue_tenants]
+      assert_equal 4, runtime.metrics[:oldest_overdue_age]
+      runtime.pause_tenant("b")
+      assert_equal 1, runtime.metrics[:overdue_tenants]
+      runtime.send(:apply_discovery, %w[a b], Acp::Runtime::DueHeap.new, 3)
+      assert_equal 0, runtime.metrics[:overdue_tenants]
+      runtime.resume_tenant("b")
+      root.yield
+      assert_equal 1, runtime.metrics[:overdue_tenants]
+      assert_equal 0, runtime.metrics[:oldest_overdue_age]
+      clock.sleep(2)
+      assert_equal 2, runtime.metrics[:oldest_overdue_age]
+      runner.stop
+    end
+
+    assert_equal 0, runtime.metrics[:overdue_tenants]
+    assert_equal 1, runtime.metrics[:pressure][:fetch_service][:outcomes][:cancelled]
+    assert_equal 1, runtime.metrics[:pressure][:cycle_duration][:outcomes][:cancelled]
+  end
+
+  # Both stages exercise the same gated contention boundaries.
+  # rubocop:disable Metrics/BlockLength
+  def test_resolution_and_fetch_wait_are_separate_from_callback_service
+    %i[resolve fetch].each do |stage|
+      clock = FakeClock.new
+      gate = Async::Queue.new
+      callback = lambda do |tenant, context = nil|
+        if tenant == "first"
+          gate.pop
+        else
+          clock.sleep(3)
+        end
+        Acp::Batch.new(data: [], next_cursor: context.cursor) if context
+      end
+      program = build_program(fetch: callback)
+      program.fetch_concurrency 1
+      program.resolve_concurrency 1
+      runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, clock: clock)
+      invoke = lambda do |tenant|
+        if stage == :resolve
+          runtime.send(:resolve_stage) { callback.call(tenant) }
+        else
+          context = Acp::FetchContext.new(tenant_id: tenant, cursor: Time.utc(2025), poll_id: "poll", attempt: 1)
+          runtime.send(:fetch, tenant, context)
+        end
+      end
+
+      Async do |root|
+        first = root.async { invoke.call("first") }
+        second = root.async { invoke.call("second") }
+        clock.sleep(2)
+        gate.push(true)
+        [first, second].each(&:wait)
+      end
+
+      pressure = runtime.metrics[:pressure]
+      assert_equal 2, pressure[:"#{stage}_wait"][:count]
+      assert_equal 2, pressure[:"#{stage}_wait"][:sum]
+      assert_equal 5, pressure[:"#{stage}_service"][:sum]
+      assert_equal 3, pressure[:"#{stage}_service"][:max]
+    end
+  end
+  # rubocop:enable Metrics/BlockLength
+
+  def test_initial_cursor_acknowledgement_backoff_and_cycle_overrun_boundaries
+    clock = FakeClock.new
+    attempts = 0
+    progress = MemoryProgress.new
+    progress.define_singleton_method(:read) do |_id|
+      clock.sleep(1)
+      nil
+    end
+    progress.define_singleton_method(:initialize_cursor) do |_id, cursor|
+      clock.sleep(2)
+      cursor
+    end
+    progress.define_singleton_method(:acknowledge) do |*|
+      clock.sleep(3)
+      attempts += 1
+      raise IOError, "retry" if attempts == 1
+    end
+    program = build_program(interval: 10, ingest_retry: { on: IOError, max_attempts: 2, backoff: 4, max_backoff: 4 })
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress, clock: clock)
+    runtime.instance_variable_set(:@ingest_queue, Acp::Runtime::IngestQueue.new(1))
+
+    Async do |root|
+      worker = root.async { runtime.send(:ingestion_worker, runtime.instance_variable_get(:@ingest_queue)) }
+      assert_equal 13, runtime.send(:run_cycle, "a", 0)
+      worker.stop
+    end
+
+    pressure = runtime.metrics[:pressure]
+    assert_equal 1, pressure[:cursor_read_service][:sum]
+    assert_equal 2, pressure[:cursor_initialize_service][:sum]
+    assert_equal 6, pressure[:acknowledge_service][:sum]
+    assert_equal 1, pressure[:acknowledge_service][:outcomes][:error]
+    assert_equal 0, pressure[:acknowledge_wait][:sum]
+    assert_equal 4, pressure[:acknowledge_backoff][:sum]
+    assert_equal 1, pressure[:acknowledge_backoff][:outcomes][:success]
+    assert_equal 10, pressure[:cursor_update_delay][:sum]
+    assert_equal 3, pressure[:cycle_overrun][:max]
+    assert_equal 0, pressure[:admission_lag][:max]
+  end
+
+  def test_ingestion_queue_wait_and_cancelled_wait_are_recorded_once
+    clock = ControlledClock.new
+    gate = Async::Queue.new
+    started = Async::Queue.new
+    program = build_program(tenants: %w[a b c], interval: 60, ingest: lambda do |_batch, context|
+      started.push(context.tenant_id)
+      gate.pop
+    end)
+    program.ingest_concurrency 1
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, clock: clock)
+    runtime.define_singleton_method(:initial_offset) { |_id| 0 }
+
+    Async do |root|
+      runner = root.async { runtime.run }
+      assert_equal "a", started.pop
+      root.yield until runtime.metrics[:queued_batches] == 2
+      clock.sleep(5)
+      gate.push(true)
+      assert_equal "b", started.pop
+      root.yield until runtime.metrics[:completed_cycles] == 1
+      clock.sleep(2)
+      runner.stop
+    end
+
+    pressure = runtime.metrics[:pressure]
+    assert_equal 3, pressure[:ingest_wait][:count]
+    assert_equal 12, pressure[:ingest_wait][:sum] # a=0, b=5, c=7 (cancelled).
+    assert_equal 1, pressure[:ingest_wait][:outcomes][:cancelled]
+    assert_equal 7, pressure[:ingest_service][:sum] # a=5, b=2 (cancelled).
+    assert_equal 1, pressure[:ingest_service][:outcomes][:cancelled]
+  end
+
+  def test_fetch_backoff_timeouts_and_cancellation_do_not_become_service_time
+    clock = FakeClock.new
+    attempts = 0
+    program = build_program(fetch_retry: { on: IOError, max_attempts: 2, backoff: 4, max_backoff: 4 },
+                            fetch: lambda do |_tenant, context|
+                              clock.sleep(2)
+                              attempts += 1
+                              raise IOError, "retry" if attempts == 1
+
+                              Acp::Batch.new(data: [], next_cursor: context.cursor)
+                            end)
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, clock: clock)
+    context = Acp::FetchContext.new(tenant_id: "a", cursor: Time.utc(2025), poll_id: "poll", attempt: 1)
+    Async do
+      runtime.send(:retry_stage, program.configuration.fetch_retry, :fetch, "a") do
+        runtime.send(:fetch, "a", context)
+      end
+      policy = Acp::RetryPolicy.new(timeout: 0.001)
+      assert_raises(Acp::StageTimeoutError) do
+        runtime.send(:retry_stage, policy, :fetch, "a") do
+          runtime.send(:resolve_stage) { Kernel.sleep(60) }
+        end
+      end
+    end.wait
+
+    pressure = runtime.metrics[:pressure]
+    assert_equal 4, pressure[:fetch_service][:sum]
+    assert_equal 4, pressure[:fetch_backoff][:sum]
+    assert_equal 1, pressure[:fetch_backoff][:outcomes][:success]
+    assert_equal 1, pressure[:fetch_service][:outcomes][:error]
+    assert_equal 1, pressure[:resolve_service][:outcomes][:timeout]
+  end
+
+  def test_reactor_and_renewal_wakeup_lag_have_explicit_monotonic_boundaries
+    clock = FakeClock.new
+    ownership = Acp::LocalOwnership.new
+    ownership.define_singleton_method(:renewal_interval) { |_token| 1 }
+    ownership.define_singleton_method(:renew) { |*| true }
+    # The clock advances 0.25 beyond each requested heartbeat sleep.
+    clock.define_singleton_method(:sleep) do |duration|
+      @time += duration + 0.25
+      Async::Task.current.yield
+    end
+    program = build_program
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new,
+                               ownership: ownership, clock: clock)
+    Async do |root|
+      sampler = runtime.send(:start_reactor_sampler)
+      clock.sleep(0.1) # moves monotonic time to 0.35 before the sampler wakes.
+      Kernel.sleep(0.11)
+      sampler.stop
+      assert_in_delta 0.25, runtime.metrics[:pressure][:reactor_lag][:last]
+      heartbeat = runtime.send(:start_lease_heartbeat, "a", true, { lost: false })
+      root.yield # first wakeup is observed, then the next sleep yields.
+      heartbeat.stop
+    end
+    assert_in_delta 0.25, runtime.metrics[:pressure][:renewal_wakeup_lag][:last]
+  end
+
+  def test_histograms_are_bounded_immutable_and_have_a_real_overflow_bucket
+    clock = FakeClock.new
+    pressure = Acp::PressureMetrics.new([:sample], clock: clock)
+    10_000.times { |index| pressure.observe(:sample, index) }
+    snapshot = pressure.snapshot
+    assert_equal 10_000, snapshot[:sample][:count]
+    assert_equal Acp::PressureMetrics::BOUNDARIES.length + 1, snapshot[:sample][:buckets].length
+    assert_nil snapshot[:sample][:p99]
+    assert_equal 9999, snapshot[:sample][:max]
+    assert_raises(FrozenError) { snapshot[:sample][:buckets] << 1 }
+    assert_raises(FrozenError) { snapshot[:sample][:outcomes][:error] = 1 }
+    pressure.observe(:sample, 0)
+    assert_equal 10_000, snapshot[:sample][:count]
+    assert_equal 10_001, pressure.snapshot[:sample][:count]
+    runtime = Acp::Runtime.new(configuration: build_program.configuration, progress: MemoryProgress.new)
+    runtime.instance_variable_get(:@pressure).observe(:admission_lag, 301)
+    assert_nil runtime.metrics.fetch(:polling_lag_p95)
+  end
+
+  def test_fetch_timeout_while_waiting_does_not_start_service_or_leak_capacity
+    clock = ControlledClock.new
+    gate = Async::Queue.new
+    started = Async::Queue.new
+    program = build_program(fetch: lambda do |_tenant, context|
+      started.push(true)
+      gate.pop
+      Acp::Batch.new(data: [], next_cursor: context.cursor)
+    end)
+    program.fetch_concurrency 1
+    runtime = Acp::Runtime.new(configuration: program.configuration, progress: MemoryProgress.new, clock: clock)
+    context = Acp::FetchContext.new(tenant_id: "a", cursor: Time.utc(2025), poll_id: "poll", attempt: 1)
+    Async do |root|
+      first = root.async { runtime.send(:fetch, "a", context) }
+      started.pop
+      second = root.async do
+        assert_raises(Acp::StageTimeoutError) do
+          runtime.send(:retry_stage, Acp::RetryPolicy.new(timeout: 0.001), :fetch, "b") do
+            runtime.send(:fetch, "b", context)
+          end
+        end
+      end
+      clock.sleep(2)
+      second.wait
+      gate.push(true)
+      first.wait
+    end
+    pressure = runtime.metrics[:pressure]
+    assert_equal 2, pressure[:fetch_wait][:sum]
+    assert_equal 1, pressure[:fetch_wait][:outcomes][:timeout]
+    assert_equal 1, pressure[:fetch_service][:count]
+    assert_equal 2, pressure[:fetch_service][:sum]
+    assert_equal 0, runtime.metrics[:active_fetches]
+  end
 end
 # rubocop:enable Metrics/ClassLength, Metrics/MethodLength, Metrics/AbcSize, Metrics/ParameterLists

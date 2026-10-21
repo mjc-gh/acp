@@ -210,6 +210,8 @@ begin
                                  Float(ENV.fetch("ACP_BENCH_LATENCY_MAX", "19"))],
     payload_bytes_per_record: Integer(ENV.fetch("ACP_BENCH_PAYLOAD_BYTES", "1024")),
     latency_distribution_method: "seeded per tenant/attempt, histogram bucket upper bounds",
+    pressure_histogram_boundaries_seconds: Acp::PressureMetrics::BOUNDARIES,
+    pressure_metrics_lifetime: "worker lifetime, including startup and drain; final and sampled worker snapshots",
     results: summary
   )
 ensure

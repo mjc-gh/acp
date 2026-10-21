@@ -17,7 +17,7 @@ module Acp
   # rubocop:disable Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
   class RedisCoordinator
     Progress = Struct.new(:cursor, :revision, keyword_init: true)
-    Lease = Struct.new(:worker_id, :token, keyword_init: true)
+    Lease = Struct.new(:worker_id, :token, :timing, keyword_init: true)
 
     CLAIM_SCRIPT = <<~LUA
       local now = redis.call("TIME")
@@ -170,7 +170,7 @@ module Acp
     def initialize(application:, environment:, program:, redis_url: ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0"),
                    redis_options: {}, connection_factory: nil, worker_id: SecureRandom.uuid,
                    lease_ttl: 60, claim_scan_limit: 256, worker_scan_limit: 256,
-                   connection_pool_size: 16, renewal_pool_size: 8)
+                   connection_pool_size: 16, renewal_pool_size: 8, clock: MonotonicClock.new)
       [application, environment, program].each do |part|
         unless part.is_a?(String) && !part.empty?
           raise ConfigurationError, "Redis namespace components must be nonempty strings"
@@ -211,9 +211,17 @@ module Acp
       @client_pools = { commands: [], renewal: [] }
       @client_limits = { commands: connection_pool_size, renewal: renewal_pool_size }
       @client_semaphores = @client_limits.transform_values { |size| Async::Semaphore.new(size) }
+      @clock = clock
+      @pressure = PressureMetrics.new(%i[commands_checkout commands_service renewal_checkout renewal_service
+                                         lease_renewal_slack], clock: clock)
+      @renewal_metrics = { renewal_successes: 0, renewal_failures: 0, renewal_deadline_misses: 0 }
     end
 
     attr_reader :worker_id, :discovered_tenant_count
+
+    def metrics
+      @renewal_metrics.merge(pressure: @pressure.snapshot).freeze
+    end
 
     def register_tenants(tenant_ids)
       tenant_ids.each_slice(@claim_scan_limit) do |batch|
@@ -367,19 +375,21 @@ module Acp
 
     def acquire(tenant_id)
       identity = canonical_tenant_id(tenant_id)
-      elapsed = @worker_heartbeat_at && Process.clock_gettime(Process::CLOCK_MONOTONIC) - @worker_heartbeat_at
+      elapsed = @worker_heartbeat_at && @clock.now - @worker_heartbeat_at
       if !elapsed || elapsed >= renewal_interval(nil)
         heartbeat_worker(capacity: @worker_capacity || 1, active: @worker_active || 0)
       end
       token = SecureRandom.hex(24)
+      deadline = nil
       claimed = with_client do |redis|
+        deadline = @clock.now + @lease_ttl_ms / 1000.0
         redis.eval(
           CLAIM_SCRIPT,
           keys: [lease_key(identity), key("workers"), tenant_key(identity), key("discovery:completed")],
           argv: [worker_id, encoded_worker_id, token, @lease_ttl_ms, identity, key("worker:"), @worker_scan_limit]
         )
       end
-      Lease.new(worker_id: worker_id, token: token).freeze if claimed == 1
+      Lease.new(worker_id: worker_id, token: token, timing: { deadline: deadline }).freeze if claimed == 1
     end
 
     def renewal_interval(_lease)
@@ -387,11 +397,27 @@ module Acp
     end
 
     def renew(tenant_id, lease)
+      old_deadline = lease.timing&.fetch(:deadline)
       identity = canonical_tenant_id(tenant_id)
+      deadline = nil
       result = with_client(lane: :renewal) do |redis|
+        deadline = @clock.now + @lease_ttl_ms / 1000.0
         redis.eval(RENEW_SCRIPT, keys: [lease_key(identity)], argv: [lease.token, @lease_ttl_ms])
       end
+      @renewal_metrics[result == 1 ? :renewal_successes : :renewal_failures] += 1
+      lease.timing[:deadline] = deadline if result == 1 && lease.timing
       result == 1
+    rescue StandardError
+      @renewal_metrics[:renewal_failures] += 1
+      raise
+    ensure
+      if old_deadline
+        slack = old_deadline - @clock.now
+        outcome = result == 1 ? :success : PressureMetrics.outcome($ERROR_INFO)
+        outcome = :error if outcome == :success && result != 1
+        @pressure.observe(:lease_renewal_slack, slack, outcome: outcome)
+        @renewal_metrics[:renewal_deadline_misses] += 1 if slack <= 0
+      end
     end
 
     def valid?(tenant_id, lease)
@@ -487,7 +513,7 @@ module Acp
       end
       @worker_capacity = capacity
       @worker_active = active
-      @worker_heartbeat_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      @worker_heartbeat_at = @clock.now
     end
 
     def worker_statuses
@@ -649,11 +675,14 @@ module Acp
 
     def with_client(lane: :commands)
       semaphore = @client_semaphores.fetch(lane) if Async::Task.current?
-      semaphore&.acquire
+      @pressure.measure(:"#{lane}_checkout") { semaphore&.acquire }
       acquired = true
       pool = @client_pools.fetch(lane)
-      client = pool.pop || new_client
-      result = yield client
+      client = nil
+      result = @pressure.measure(:"#{lane}_service") do
+        client = pool.pop || new_client
+        yield client
+      end
       reusable = true
       result
     ensure

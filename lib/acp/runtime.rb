@@ -6,6 +6,7 @@ require "async/queue"
 require "async/semaphore"
 require "async/notification"
 require "digest"
+require_relative "pressure_metrics"
 
 module Acp
   # Monotonic time and cooperative sleeping used by the local runtime.
@@ -47,7 +48,12 @@ module Acp
     State = Struct.new(:tenant_id, :due, :sequence, :in_flight, :enabled, :scheduled, keyword_init: true)
     IngestMessage = Struct.new(:tenant_id, :batch, :context, :reply, :queued_at,
                                :task, :queued, :cancelled, :committed, :token, :lease_state, keyword_init: true)
-    POLLING_LAG_BUCKETS = [0.0, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 300].freeze
+    REACTOR_SAMPLE_INTERVAL = 0.1
+    PRESSURE_NAMES = %i[admission_lag cycle_duration cycle_overrun resolve_wait resolve_service
+                        fetch_wait fetch_service ingest_wait ingest_service acknowledge_wait acknowledge_service
+                        cursor_read_service cursor_initialize_service cursor_update_delay
+                        fetch_backoff ingest_backoff acknowledge_backoff
+                        reactor_lag renewal_wakeup_lag renewal_service].freeze
 
     def initialize(configuration:, progress:, ownership: LocalOwnership.new,
                    clock: MonotonicClock.new, on_error: nil, random: Random,
@@ -87,7 +93,7 @@ module Acp
         discovery_successes: 0,
         discovery_failures: 0
       }
-      @polling_lag_histogram = Array.new(POLLING_LAG_BUCKETS.length, 0)
+      @pressure = PressureMetrics.new(PRESSURE_NAMES, clock: @clock)
       @running = false
       @shutdown_requested = false
       @paused_tenants = {}
@@ -95,7 +101,13 @@ module Acp
     end
 
     def metrics
-      @metrics.dup.freeze
+      pressure = @pressure.snapshot
+      lag = pressure.fetch(:admission_lag)
+      snapshot = @metrics.merge(polling_lag: lag[:last], polling_lag_p50: lag[:p50],
+                                polling_lag_p95: lag[:p95], polling_lag_p99: lag[:p99],
+                                **overdue_snapshot, pressure: pressure)
+      snapshot[:redis] = @ownership.metrics if @ownership.respond_to?(:metrics)
+      snapshot.freeze
     end
 
     def health
@@ -135,6 +147,7 @@ module Acp
       @running = true
       running = true
       task = Async::Task.current
+      reactor_sampler = start_reactor_sampler
       queue = IngestQueue.new(@configuration.pipeline_capacity)
       @ingest_queue = queue
       events = Async::LimitedQueue.new(@configuration.pipeline_capacity)
@@ -190,7 +203,7 @@ module Acp
           cycle_task = task.async(cycle_state) do |_cycle_task, state; next_due|
             next_due = @clock.now + @configuration.interval
             begin
-              next_due = run_cycle(state.tenant_id)
+              next_due = run_cycle(state.tenant_id, state.due)
             ensure
               @metrics[:active_cycles] -= 1
               begin
@@ -258,16 +271,43 @@ module Acp
         discovery_task&.stop
         assignment_task&.stop
         worker_heartbeat&.stop
+        reactor_sampler&.stop
         events&.close
         @cycle_tasks&.each_value(&:stop)
         @ingestion_tasks&.each(&:stop)
         queue&.close
         drain_ingest_queue(queue) if queue
         @running = false
+        @metrics[:pipeline_utilization] = 0.0
       end
     end
 
     private
+
+    def overdue_snapshot
+      now = @clock.now
+      count = 0
+      oldest = 0.0
+      @states&.each_value do |state|
+        next unless @running && state.enabled && state.scheduled && !state.in_flight
+        next if @paused_tenants.key?(state.tenant_id) || state.due > now
+
+        count += 1
+        oldest = [oldest, now - state.due].max
+      end
+      { overdue_tenants: count, oldest_overdue_age: oldest }
+    end
+
+    def start_reactor_sampler
+      Async::Task.current.async do
+        loop do
+          expected = @clock.now + REACTOR_SAMPLE_INTERVAL
+          # Use reactor time for the timer; injected clocks must not be advanced by instrumentation.
+          Kernel.sleep(REACTOR_SAMPLE_INTERVAL)
+          @pressure.observe(:reactor_lag, [@clock.now - expected, 0].max)
+        end
+      end
+    end
 
     def discover
       discovered = {}
@@ -414,8 +454,9 @@ module Acp
       sample.fdiv(2**64) * @configuration.interval
     end
 
-    def run_cycle(tenant_id)
+    def run_cycle(tenant_id, scheduled_due = @clock.now)
       started_at = @clock.now
+      @pressure.observe(:admission_lag, [started_at - scheduled_due, 0].max)
       ownership_token = @ownership.acquire(tenant_id)
       unless ownership_token
         @metrics[:ownership_skips] += 1
@@ -441,22 +482,31 @@ module Acp
       ingest(batch, tenant_id, cursor, poll_id, ownership_token, lease_state)
       ensure_ownership!(tenant_id, ownership_token, lease_state)
       cursor_update_started = @clock.now
-      acknowledge(tenant_id, poll_id, batch.next_cursor, progress_state.revision, ownership_token)
+      @pressure.measure(:cursor_update_delay) do
+        acknowledge(tenant_id, poll_id, batch.next_cursor, progress_state.revision, ownership_token)
+      end
       @metrics[:cursor_update_delay] = @clock.now - cursor_update_started
-      @metrics[:polling_lag] = [@clock.now - (started_at + @configuration.interval), 0].max
-      record_cycle_success(@metrics[:polling_lag])
+      @metrics[:completed_cycles] += 1
       emit(:poll_completed, tenant_id: tenant_id, poll_id: poll_id, stage: :scheduling,
                             duration: @clock.now - started_at)
       [started_at + @configuration.interval, @clock.now].max
     rescue LeaseLostError, ProgressConflictError => e
+      cycle_error = e
       report_error(tenant_id, e, :ownership)
       @clock.now + @configuration.interval
     rescue Acp::RuntimeError
       raise
     rescue StandardError => e
+      cycle_error = e
       report_error(tenant_id, e, :cycle)
       @clock.now + @configuration.retry_cooldown
     ensure
+      outcome = PressureMetrics.outcome($ERROR_INFO || cycle_error)
+      if started_at
+        @pressure.observe(:cycle_duration, [@clock.now - started_at, 0].max, outcome: outcome)
+        @pressure.observe(:cycle_overrun, [@clock.now - started_at - @configuration.interval, 0].max,
+                          outcome: outcome)
+      end
       heartbeat&.stop
       release_ownership(tenant_id, ownership_token) if ownership_token
       @cycle_poll_ids.delete(tenant_id)
@@ -464,21 +514,21 @@ module Acp
 
     def read_or_initialize_cursor(tenant_id)
       if @progress.respond_to?(:read_state)
-        state = @progress.read_state(tenant_id)
+        state = @pressure.measure(:cursor_read_service) { @progress.read_state(tenant_id) }
         return state if state
 
         initial = Timestamp.normalize(resolve_stage { @configuration.callback(:initial_cursor).call(tenant_id) })
-        initialized = @progress.initialize_state(tenant_id, initial)
+        initialized = @pressure.measure(:cursor_initialize_service) { @progress.initialize_state(tenant_id, initial) }
         raise Acp::RuntimeError, "progress initialization returned no cursor" if initialized.nil?
 
         return initialized
       end
 
-      cursor = @progress.read(tenant_id)
+      cursor = @pressure.measure(:cursor_read_service) { @progress.read(tenant_id) }
       return ProgressSnapshot.new(cursor: Timestamp.normalize(cursor), revision: nil) unless cursor.nil?
 
       initial = Timestamp.normalize(resolve_stage { @configuration.callback(:initial_cursor).call(tenant_id) })
-      initialized = @progress.initialize_cursor(tenant_id, initial)
+      initialized = @pressure.measure(:cursor_initialize_service) { @progress.initialize_cursor(tenant_id, initial) }
       raise Acp::RuntimeError, "progress initialization returned no cursor" if initialized.nil?
 
       ProgressSnapshot.new(cursor: Timestamp.normalize(initialized), revision: nil)
@@ -486,14 +536,14 @@ module Acp
 
     def fetch(tenant, context)
       semaphore = (@fetch_semaphore ||= Async::Semaphore.new(@configuration.effective_fetch_concurrency))
-      semaphore.acquire
+      @pressure.measure(:fetch_wait) { semaphore.acquire }
       acquired = true
       @metrics[:active_fetches] += 1
       @metrics[:max_active_fetches] = [@metrics[:max_active_fetches], @metrics[:active_fetches]].max
       started_at = @clock.now
       emit(:fetch_started, tenant_id: context.tenant_id, poll_id: context.poll_id,
                            stage: :fetch, attempt: context.attempt)
-      result = @configuration.callback(:fetch).call(tenant, context)
+      result = @pressure.measure(:fetch_service) { @configuration.callback(:fetch).call(tenant, context) }
       raise InvalidBatchError, "fetch must return an Acp::Batch" unless result.is_a?(Batch)
 
       emit(:fetch_completed, tenant_id: context.tenant_id, poll_id: context.poll_id,
@@ -508,7 +558,11 @@ module Acp
 
     def resolve_stage(&block)
       @resolve_semaphore ||= Async::Semaphore.new(@configuration.effective_resolve_concurrency)
-      @resolve_semaphore.acquire(&block)
+      @pressure.measure(:resolve_wait) { @resolve_semaphore.acquire }
+      acquired = true
+      @pressure.measure(:resolve_service, &block)
+    ensure
+      @resolve_semaphore.release if acquired
     end
 
     def ingest(batch, tenant_id, cursor, poll_id, token, lease_state)
@@ -531,7 +585,7 @@ module Acp
         error = begin
           within_retry_budget(policy, started_at) { reply.pop }
         rescue StageTimeoutError => e
-          cancel_ingestion(message)
+          cancel_ingestion(message, outcome: :timeout)
           message.committed ? nil : e
         end
         return if error.nil?
@@ -543,7 +597,7 @@ module Acp
         @metrics[:retry_count] += 1
         emit(:retry_scheduled, tenant_id: tenant_id, poll_id: poll_id, stage: :ingest,
                                attempt: attempt, error: classify_error(:ingestion, error))
-        retry_sleep(policy, started_at, attempt, error)
+        retry_sleep(policy, started_at, attempt, error, :ingest)
         attempt += 1
       end
     ensure
@@ -552,6 +606,7 @@ module Acp
 
     def ingestion_worker(queue)
       while (message = queue.pop)
+        @pressure.observe(:ingest_wait, [@clock.now - message.queued_at, 0].max)
         message.queued = false
         @metrics[:queued_batches] -= 1
         message.task = Async::Task.new(Async::Task.current) do
@@ -577,7 +632,7 @@ module Acp
         tenant_id: message.tenant_id, poll_id: message.context.poll_id,
         stage: :ingest, attempt: message.context.attempt
       )
-      @configuration.callback(:ingest).call(message.batch, message.context)
+      @pressure.measure(:ingest_service) { @configuration.callback(:ingest).call(message.batch, message.context) }
       message.committed = true
       @metrics[:ingestion_duration] = @clock.now - started_at
       emit(
@@ -597,10 +652,11 @@ module Acp
       end
     end
 
-    def cancel_ingestion(message)
+    def cancel_ingestion(message, outcome: :cancelled)
       Async::Task.current.defer_stop do
         message.cancelled = true
         if message.queued && @ingest_queue.delete(message)
+          @pressure.observe(:ingest_wait, [@clock.now - message.queued_at, 0].max, outcome: outcome)
           message.queued = false
           @metrics[:queued_batches] -= 1
         end
@@ -616,11 +672,14 @@ module Acp
       attempt = 1
       started_at = @clock.now
       loop do
-        Async::Task.current.defer_stop do
-          if @progress.respond_to?(:advance)
-            @progress.advance(tenant_id, poll_id, cursor, expected_revision: revision, lease: ownership_token)
-          else
-            @progress.acknowledge(tenant_id, poll_id, cursor)
+        @pressure.observe(:acknowledge_wait, 0.0)
+        @pressure.measure(:acknowledge_service) do
+          Async::Task.current.defer_stop do
+            if @progress.respond_to?(:advance)
+              @progress.advance(tenant_id, poll_id, cursor, expected_revision: revision, lease: ownership_token)
+            else
+              @progress.acknowledge(tenant_id, poll_id, cursor)
+            end
           end
         end
         return
@@ -636,7 +695,7 @@ module Acp
                   @configuration.retry_cooldown
                 end
         @metrics[:retry_count] += 1
-        @clock.sleep(delay)
+        @pressure.measure(:acknowledge_backoff) { @clock.sleep(delay) }
         attempt += 1
       end
     end
@@ -656,7 +715,7 @@ module Acp
         emit(:retry_scheduled, tenant_id: tenant_id, poll_id: @cycle_poll_ids[tenant_id], stage: stage,
                                attempt: attempt, error: classify_error(stage, e))
         report_error(tenant_id, e, stage, attempt: attempt)
-        retry_sleep(policy, started_at, attempt, e)
+        retry_sleep(policy, started_at, attempt, e, stage)
         attempt += 1
       end
     end
@@ -671,12 +730,12 @@ module Acp
       Async::Task.current.with_timeout(duration, StageTimeoutError, &block)
     end
 
-    def retry_sleep(policy, started_at, attempt, error)
+    def retry_sleep(policy, started_at, attempt, error, stage)
       delay = policy.delay(attempt: attempt, random: @random)
       remaining = policy.max_elapsed && policy.max_elapsed - (@clock.now - started_at)
       raise error if remaining && remaining <= 0
 
-      @clock.sleep(remaining ? [delay, remaining].min : delay)
+      @pressure.measure(:"#{stage}_backoff") { @clock.sleep(remaining ? [delay, remaining].min : delay) }
       raise error if policy.max_elapsed && @clock.now - started_at >= policy.max_elapsed
     end
 
@@ -757,8 +816,11 @@ module Acp
       cycle_task = Async::Task.current
       Async::Task.current.async do
         loop do
-          @clock.sleep(@ownership.renewal_interval(token))
-          next if @ownership.renew(tenant_id, token)
+          interval = @ownership.renewal_interval(token)
+          expected = @clock.now + interval
+          @clock.sleep(interval)
+          @pressure.observe(:renewal_wakeup_lag, [@clock.now - expected, 0].max)
+          next if @pressure.measure(:renewal_service) { @ownership.renew(tenant_id, token) }
 
           @metrics[:renewal_deadline_misses] += 1
           lease_state[:lost] = true
@@ -803,23 +865,11 @@ module Acp
       @metrics[:max_queued_batches] = [@metrics[:max_queued_batches], @metrics[:queued_batches]].max
     end
 
-    def record_cycle_success(lag)
-      @metrics[:completed_cycles] += 1
-      bucket = POLLING_LAG_BUCKETS.index { |boundary| lag <= boundary } || POLLING_LAG_BUCKETS.length - 1
-      @polling_lag_histogram[bucket] += 1
-      [50, 95, 99].each do |percentile|
-        target = (@metrics[:completed_cycles] * percentile / 100.0).ceil
-        cumulative = 0
-        index = @polling_lag_histogram.index do |count|
-          cumulative += count
-          cumulative >= target
-        end
-        @metrics["polling_lag_p#{percentile}".to_sym] = POLLING_LAG_BUCKETS.fetch(index)
-      end
-    end
-
     def drain_ingest_queue(queue)
-      @metrics[:queued_batches] -= 1 while queue.pop(timeout: 0)
+      while (message = queue.pop(timeout: 0))
+        @pressure.observe(:ingest_wait, [@clock.now - message.queued_at, 0].max, outcome: :cancelled)
+        @metrics[:queued_batches] -= 1
+      end
     end
 
     # Reactor-local queue with removal so cancelled batches never outlive their

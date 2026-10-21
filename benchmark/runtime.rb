@@ -62,6 +62,8 @@ progress = BenchmarkProgress.new
 runtime = Acp::Runtime.new(configuration: program.configuration, progress: progress)
 initial_rss = File.read("/proc/self/status").match(/^VmRSS:\s+(\d+)\s+kB$/)[1].to_i / 1024.0
 peak_rss = initial_rss
+reactor_lags = { count: 0, sum: 0.0, max: 0.0 }
+pressure_peaks = { overdue_tenants: 0, oldest_overdue_age: 0.0 }
 started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
 Async do |root|
@@ -70,7 +72,14 @@ Async do |root|
     loop do
       rss = File.read("/proc/self/status").match(/^VmRSS:\s+(\d+)\s+kB$/)[1].to_i / 1024.0
       peak_rss = [peak_rss, rss].max
+      snapshot = runtime.metrics
+      pressure_peaks.each_key { |name| pressure_peaks[name] = [pressure_peaks[name], snapshot.fetch(name)].max }
+      expected = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.1
       Async::Task.current.sleep(0.1)
+      lag = [Process.clock_gettime(Process::CLOCK_MONOTONIC) - expected, 0].max
+      reactor_lags[:count] += 1
+      reactor_lags[:sum] += lag
+      reactor_lags[:max] = [reactor_lags[:max], lag].max
     end
   end
   root.sleep(duration)
@@ -112,6 +121,10 @@ report = {
   fetches: upstream.calls,
   completed_cycles: completed,
   throughput_cycles_per_second: (completed / elapsed).round(2),
+  observer_reactor_lag_seconds: reactor_lags,
+  runtime_pressure: metrics,
+  sampled_pressure_peaks: pressure_peaks,
+  pressure_histogram_boundaries_seconds: Acp::PressureMetrics::BOUNDARIES,
   polling_lag_seconds_bucket_upper_bounds: metrics.slice(
     :polling_lag_p50, :polling_lag_p95, :polling_lag_p99
   ),

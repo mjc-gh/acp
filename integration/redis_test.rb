@@ -256,7 +256,45 @@ class RedisCoordinationIntegrationTest < Minitest::Test
       assert_nil lease_observed
       assert_equal 1, runtime.metrics[:completed_cycles]
       assert_equal 0, runtime.metrics[:renewal_deadline_misses]
+      assert_operator runtime.metrics[:pressure][:renewal_wakeup_lag][:count], :>=, 3
+      assert_operator @store.metrics[:renewal_successes], :>=, 3
+      slack = @store.metrics[:pressure][:lease_renewal_slack]
+      assert_operator slack[:min], :>, 0
+      assert_operator slack[:max], :<=, 3
     end
+  end
+
+  def test_real_renewal_checkout_delay_low_slack_and_expiry_are_distinct
+    @store = build_store(worker_id: "worker-a", lease_ttl: 3, renewal_pool_size: 1)
+    lease = @store.acquire("tenant")
+    refute_nil lease
+    gate = Async::Queue.new
+    started = Async::Queue.new
+    Async do |root|
+      holder = root.async do
+        @store.send(:with_client, lane: :renewal) do
+          started.push(true)
+          gate.pop
+        end
+      end
+      started.pop
+      renewal = root.async { @store.renew("tenant", lease) }
+      Kernel.sleep(2.4)
+      gate.push(true)
+      holder.wait
+      assert renewal.wait
+      pressure = @store.metrics[:pressure]
+      assert_operator pressure[:renewal_checkout][:max], :>=, 2.4
+      assert_operator pressure[:lease_renewal_slack][:last], :>, 0
+      assert_operator pressure[:lease_renewal_slack][:last], :<, 0.7
+      assert_operator pressure[:renewal_service][:last], :<, 0.5
+      Kernel.sleep(3.1)
+      refute @store.renew("tenant", lease)
+    end
+    assert_equal 1, @store.metrics[:renewal_successes]
+    assert_equal 1, @store.metrics[:renewal_failures]
+    assert_equal 1, @store.metrics[:renewal_deadline_misses]
+    assert_operator @store.metrics[:pressure][:lease_renewal_slack][:last], :<, 0
   end
 
   def test_followers_consume_discovery_and_remote_pause_changes
@@ -375,7 +413,7 @@ class RedisCoordinationIntegrationTest < Minitest::Test
 
   private
 
-  def build_store(worker_id:, lease_ttl: 6, connection_factory: nil)
+  def build_store(worker_id:, lease_ttl: 6, connection_factory: nil, renewal_pool_size: 8)
     store = Acp::RedisCoordinator.new(
       application: @application,
       environment: "test",
@@ -383,7 +421,8 @@ class RedisCoordinationIntegrationTest < Minitest::Test
       redis_url: @url,
       worker_id: worker_id,
       lease_ttl: lease_ttl,
-      connection_factory: connection_factory
+      connection_factory: connection_factory,
+      renewal_pool_size: renewal_pool_size
     )
     @stores << store
     store
